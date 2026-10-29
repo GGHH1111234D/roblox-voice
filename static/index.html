@@ -44,18 +44,17 @@
       <!-- حقل إدخال الـ PIN المصغر والبسيط -->
       <div id="identity-group" class="pin-section">
         <label for="pin-input" class="pin-label">
-          <span>أدخل رمز الـ PIN الظاهر في اللعبة</span>
-          <span class="req-tag">4 أرقام</span>
+          <span>أدخل رمز الـ PIN أو UserId الخاص بك</span>
+          <span class="req-tag">PIN / UserId</span>
         </label>
         <div class="pin-input-container">
           <input
             type="text"
             id="pin-input"
             class="pin-large-input"
-            inputmode="numeric"
-            pattern="[0-9]*"
-            placeholder="0000"
-            maxlength="4"
+            inputmode="text"
+            placeholder="رمز PIN (مثل 8803) أو UserId"
+            maxlength="24"
             autocomplete="off"
             autofocus
           />

@@ -328,6 +328,45 @@ pinLabel.TextColor3 = COLORS.Amber
 pinLabel.Text = "PIN: ----"
 pinLabel.Parent = pinBadge
 
+-- Temporary Feedback Pill for Tap-to-Mute notifications
+local toastBadge = Instance.new("TextLabel")
+toastBadge.Name = "ToastBadge"
+toastBadge.AnchorPoint = Vector2.new(0.5, 0)
+toastBadge.Position = UDim2.new(0.5, 0, 0, 60)
+toastBadge.AutomaticSize = Enum.AutomaticSize.X
+toastBadge.Size = UDim2.fromOffset(0, 26)
+toastBadge.BackgroundColor3 = COLORS.HudBg
+toastBadge.BackgroundTransparency = 0.12
+toastBadge.Font = Enum.Font.GothamSemibold
+toastBadge.TextSize = 12
+toastBadge.TextColor3 = COLORS.White
+toastBadge.Text = ""
+toastBadge.Visible = false
+toastBadge.Parent = screenGui
+
+local toastCorner = Instance.new("UICorner")
+toastCorner.CornerRadius = UDim.new(1, 0)
+toastCorner.Parent = toastBadge
+
+local toastPad = Instance.new("UIPadding")
+toastPad.PaddingLeft = UDim.new(0, 12)
+toastPad.PaddingRight = UDim.new(0, 12)
+toastPad.Parent = toastBadge
+
+local toastToken = 0
+local function showToast(text: string, color: Color3)
+	toastToken += 1
+	local myToken = toastToken
+	toastBadge.Text = text
+	toastBadge.TextColor3 = color
+	toastBadge.Visible = true
+	task.delay(1.8, function()
+		if toastToken == myToken then
+			toastBadge.Visible = false
+		end
+	end)
+end
+
 -- ميزة وضع البث ومشاركة الشاشة (Streamer Mode / Share Screen Protection)
 local pinHiddenByUser = false
 
@@ -374,44 +413,7 @@ UserInputService.InputBegan:Connect(function(input, gameProcessed)
 	end
 end)
 
--- Temporary Feedback Pill for Tap-to-Mute notifications
-local toastBadge = Instance.new("TextLabel")
-toastBadge.Name = "ToastBadge"
-toastBadge.AnchorPoint = Vector2.new(0.5, 0)
-toastBadge.Position = UDim2.new(0.5, 0, 0, 60)
-toastBadge.AutomaticSize = Enum.AutomaticSize.X
-toastBadge.Size = UDim2.fromOffset(0, 26)
-toastBadge.BackgroundColor3 = COLORS.HudBg
-toastBadge.BackgroundTransparency = 0.12
-toastBadge.Font = Enum.Font.GothamSemibold
-toastBadge.TextSize = 12
-toastBadge.TextColor3 = COLORS.White
-toastBadge.Text = ""
-toastBadge.Visible = false
-toastBadge.Parent = screenGui
 
-local toastCorner = Instance.new("UICorner")
-toastCorner.CornerRadius = UDim.new(1, 0)
-toastCorner.Parent = toastBadge
-
-local toastPad = Instance.new("UIPadding")
-toastPad.PaddingLeft = UDim.new(0, 12)
-toastPad.PaddingRight = UDim.new(0, 12)
-toastPad.Parent = toastBadge
-
-local toastToken = 0
-local function showToast(text: string, color: Color3)
-	toastToken += 1
-	local myToken = toastToken
-	toastBadge.Text = text
-	toastBadge.TextColor3 = color
-	toastBadge.Visible = true
-	task.delay(1.8, function()
-		if toastToken == myToken then
-			toastBadge.Visible = false
-		end
-	end)
-end
 
 local function refreshHudVisuals()
 	local pin = tostring(localPlayer:GetAttribute("VoicePIN") or "----")
@@ -544,23 +546,38 @@ local function updateOverheadBubble(targetPlayer: Player)
 		if fill then fill.Visible = false end
 		if slash then slash.Visible = true; slash.BackgroundColor3 = COLORS.Red end
 		if activeDot then activeDot.Visible = true; activeDot.BackgroundColor3 = COLORS.Red end
-	elseif connected and speaking then
-		-- Speaking: Glowing green border and active indicator
+	local eqWrap = main:FindFirstChild("EqWrap") :: Frame?
+
+	if muted and (connected or isLocalMuted) then
+		-- Muted: Red muted mic icon + red border
 		main.BackgroundColor3 = COLORS.BubbleBg
-		main.BackgroundTransparency = 0.12
-		if tail then tail.BackgroundColor3 = COLORS.BubbleBg; tail.BackgroundTransparency = 0.12 end
-		if stroke then stroke.Color = COLORS.Green; stroke.Thickness = 2.6; stroke.Transparency = 0 end
-		paintIcon(COLORS.White, 0)
-		if fill then fill.Visible = true end
-		if slash then slash.Visible = false end
+		main.BackgroundTransparency = 0.14
+		if tail then tail.BackgroundColor3 = COLORS.BubbleBg; tail.BackgroundTransparency = 0.14 end
+		if stroke then stroke.Color = COLORS.Red; stroke.Thickness = 2.2; stroke.Transparency = 0.15 end
+		paintIcon(COLORS.Red, 0)
+		if micVec then micVec.Visible = true end
+		if eqWrap then eqWrap.Visible = false end
+		if fill then fill.Visible = false end
+		if slash then slash.Visible = true; slash.BackgroundColor3 = COLORS.Red end
+		if activeDot then activeDot.Visible = true; activeDot.BackgroundColor3 = COLORS.Red end
+	elseif connected and speaking then
+		-- Speaking: Glowing green border, dancing equalizer bars, and pulsing halo
+		main.BackgroundColor3 = COLORS.BubbleBg
+		main.BackgroundTransparency = 0.10
+		if tail then tail.BackgroundColor3 = COLORS.BubbleBg; tail.BackgroundTransparency = 0.10 end
+		if stroke then stroke.Color = COLORS.GreenBright; stroke.Thickness = 2.6; stroke.Transparency = 0 end
+		if micVec then micVec.Visible = false end
+		if eqWrap then eqWrap.Visible = true end
 		if activeDot then activeDot.Visible = true; activeDot.BackgroundColor3 = COLORS.GreenBright end
 	elseif connected then
 		-- Connected & Silent: Dark translucent bubble with crisp white mic icon
 		main.BackgroundColor3 = COLORS.BubbleBg
-		main.BackgroundTransparency = 0.22
-		if tail then tail.BackgroundColor3 = COLORS.BubbleBg; tail.BackgroundTransparency = 0.22 end
-		if stroke then stroke.Color = COLORS.White; stroke.Thickness = 1.5; stroke.Transparency = 0.72 end
+		main.BackgroundTransparency = 0.18
+		if tail then tail.BackgroundColor3 = COLORS.BubbleBg; tail.BackgroundTransparency = 0.18 end
+		if stroke then stroke.Color = COLORS.White; stroke.Thickness = 1.8; stroke.Transparency = 0.4 end
 		paintIcon(COLORS.White, 0)
+		if micVec then micVec.Visible = true end
+		if eqWrap then eqWrap.Visible = false end
 		if fill then fill.Visible = false end
 		if slash then slash.Visible = false end
 		if activeDot then activeDot.Visible = false end
@@ -652,7 +669,46 @@ local function attachBubbleToHead(targetPlayer: Player, head: BasePart)
 	stroke.Transparency = 0.72
 	stroke.Parent = main
 
+	local bubbleScale = Instance.new("UIScale")
+	bubbleScale.Name = "BubbleScale"
+	bubbleScale.Scale = 1
+	bubbleScale.Parent = main
+
 	buildMicVectorIcon(main, 0.95)
+
+	-- 3-bar animated Voice Equalizer for speaking animation
+	local eqWrap = Instance.new("Frame")
+	eqWrap.Name = "EqWrap"
+	eqWrap.AnchorPoint = Vector2.new(0.5, 0.5)
+	eqWrap.Position = UDim2.fromScale(0.5, 0.5)
+	eqWrap.Size = UDim2.fromOffset(20, 16)
+	eqWrap.BackgroundTransparency = 1
+	eqWrap.Visible = false
+	eqWrap.ZIndex = 7
+	eqWrap.Parent = main
+
+	local eqLayout = Instance.new("UIListLayout")
+	eqLayout.FillDirection = Enum.FillDirection.Horizontal
+	eqLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+	eqLayout.VerticalAlignment = Enum.VerticalAlignment.Center
+	eqLayout.Padding = UDim.new(0, 3)
+	eqLayout.SortOrder = Enum.SortOrder.LayoutOrder
+	eqLayout.Parent = eqWrap
+
+	for i = 1, 3 do
+		local bar = Instance.new("Frame")
+		bar.Name = "Bar" .. i
+		bar.LayoutOrder = i
+		bar.Size = UDim2.fromOffset(3, 8)
+		bar.BackgroundColor3 = COLORS.GreenBright
+		bar.BorderSizePixel = 0
+		bar.ZIndex = 8
+		bar.Parent = eqWrap
+
+		local barCorner = Instance.new("UICorner")
+		barCorner.CornerRadius = UDim.new(1, 0)
+		barCorner.Parent = bar
+	end
 
 	local activeDot = Instance.new("Frame")
 	activeDot.Name = "ActiveDot"
@@ -764,16 +820,37 @@ RunService.RenderStepped:Connect(function()
 		hudPulseStroke.Transparency = 1
 	end
 
-	-- Animate Overhead Voice Bubbles
+	-- Animate Overhead Voice Bubbles (Dancing Equalizer Bars + Bubble Scale Bobbing + Pulse Halo)
 	for _, billboard in pairs(overheadBubbles) do
+		local main = billboard:FindFirstChild("BubbleFrame") :: Frame?
+		local bubbleScale = main and main:FindFirstChild("BubbleScale") :: UIScale?
 		local halo = billboard:FindFirstChild("PulseHalo") :: Frame?
 		local haloStroke = halo and halo:FindFirstChild("HaloStroke") :: UIStroke?
-		if halo and haloStroke then
-			if billboard:GetAttribute("AnimateSpeak") == true then
-				local s = math.round(39 + wave * 10)
+		local eqWrap = main and main:FindFirstChild("EqWrap") :: Frame?
+		local isSpeaking = billboard:GetAttribute("AnimateSpeak") == true
+
+		if isSpeaking then
+			if bubbleScale then
+				bubbleScale.Scale = 1.05 + math.sin(t * 11) * 0.07
+			end
+			if halo and haloStroke then
+				local s = math.round(38 + wave * 14)
 				halo.Size = UDim2.fromOffset(s, s)
-				haloStroke.Transparency = 0.15 + wave * 0.7
-			else
+				haloStroke.Transparency = 0.1 + wave * 0.75
+			end
+			if eqWrap then
+				local bar1 = eqWrap:FindFirstChild("Bar1") :: Frame?
+				local bar2 = eqWrap:FindFirstChild("Bar2") :: Frame?
+				local bar3 = eqWrap:FindFirstChild("Bar3") :: Frame?
+				if bar1 then bar1.Size = UDim2.fromOffset(3, math.round(5 + (math.sin(t * 16) + 1) * 4)) end
+				if bar2 then bar2.Size = UDim2.fromOffset(3, math.round(7 + (math.sin(t * 22 + 1.2) + 1) * 5)) end
+				if bar3 then bar3.Size = UDim2.fromOffset(3, math.round(4 + (math.sin(t * 18 + 2.5) + 1) * 4.5)) end
+			end
+		else
+			if bubbleScale then
+				bubbleScale.Scale = 1
+			end
+			if halo and haloStroke then
 				halo.Size = UDim2.fromOffset(38, 38)
 				haloStroke.Transparency = 1
 			end

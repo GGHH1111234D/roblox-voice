@@ -791,17 +791,26 @@
   async function startDiscordOverlayAndConnect() {
     clearAlert();
 
-    const cleanedPin = pinInput.value.replace(/\D/g, "").trim();
-    if (cleanedPin.length !== 4) {
-      showAlert("يرجى إدخال رمز الـ PIN المكون من 4 أرقام والظاهر في لعبة روبلوكس!", true);
+    const rawInput = pinInput.value.trim();
+    if (!rawInput) {
+      showAlert("يرجى إدخال رمز الـ PIN (4 أرقام) أو اسم المستخدم أو UserId الخاص بك في روبلوكس!", true);
       pinInput.focus();
       return;
     }
-    myPin = cleanedPin;
-    pinInput.value = cleanedPin;
+
+    const digitsOnly = rawInput.replace(/\D/g, "");
+    if (digitsOnly.length === 4) {
+      myPin = digitsOnly;
+      myRobloxUserId = "";
+    } else if (digitsOnly.length > 4) {
+      myRobloxUserId = digitsOnly;
+      myPin = "";
+    } else {
+      myUsername = rawInput;
+    }
 
     try {
-      localStorage.setItem("rbx_aura_pin", cleanedPin);
+      localStorage.setItem("rbx_aura_pin", rawInput);
     } catch (_) {}
 
     if (!window.isSecureContext || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
@@ -897,13 +906,25 @@
     showAlert(`خطأ في الإعداد: ${errMsg}`, true);
   }
 
+  let isPinMasked = false;
+  try {
+    isPinMasked = localStorage.getItem("rbx_pin_masked") === "true";
+  } catch (_) {}
+
+  function updateConnectedBannerText() {
+    const idDisplay = myPin || (myRobloxUserId ? `ID: ${myRobloxUserId}` : myUsername);
+    const text = isPinMasked ? "PIN: ••••" : (idDisplay || "متصل");
+    connectBtnText.textContent = `🟢 متصل في مكالمة Aura (${text})  🔒`;
+  }
+
   function onPipReadyEstablishWebRTC() {
     clearAlert();
     fallbackForegroundBtn.classList.add("hidden");
     identityGroup.classList.add("hidden");
     connectBtn.classList.add("connected");
-    connectBtn.disabled = true;
-    connectBtnText.textContent = `🟢 متصل في مكالمة Aura (PIN: ${myPin})`;
+    connectBtn.disabled = false;
+    connectBtn.title = "انقر لإخفاء أو إظهار الرمز لحماية البث المباشر (Streamer Mode / Share Screen)";
+    updateConnectedBannerText();
     sessionControls.classList.remove("hidden");
 
     connectSignalingServer();
@@ -929,7 +950,11 @@
   // ---------------------------------------------------------------------------
   function buildSignalingUrl(pin) {
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const params = new URLSearchParams({ pin: pin || "" });
+    const params = new URLSearchParams({
+      pin: myPin || (pin || ""),
+      user_id: myRobloxUserId || "",
+      username: myUsername !== "أنا" ? myUsername : "",
+    });
     return `${protocol}//${window.location.host}/ws?${params.toString()}`;
   }
 
@@ -993,6 +1018,13 @@
     switch (msg.type) {
       case "pong":
         return;
+
+      case "roblox-disconnected": {
+        log("WebSocket", "تم تلقي إشعار خروج اللاعب من ماب روبلوكس -> إنهاء المكالمة بالكامل.");
+        disconnectSession();
+        showAlert(msg.message || "تم إنهاء المكالمة الصوتية تلقائياً لمغادرتك ماب روبلوكس.", false);
+        return;
+      }
 
       case "locations": {
         handleLocationsBroadcast(msg.locations, msg.pinMap, msg.peerMap);
@@ -1631,7 +1663,18 @@
     updatePlayersListUI();
   }
 
-  connectBtn.addEventListener("click", startDiscordOverlayAndConnect);
+  connectBtn.addEventListener("click", () => {
+    if (connectBtn.classList.contains("connected")) {
+      isPinMasked = !isPinMasked;
+      try {
+        localStorage.setItem("rbx_pin_masked", String(isPinMasked));
+      } catch (_) {}
+      updateConnectedBannerText();
+      showAlert(isPinMasked ? "🔒 تم إخفاء الرمز لحماية البث المباشر وShare Screen" : "👁️ تم إظهار رمز الربط", false);
+      return;
+    }
+    startDiscordOverlayAndConnect();
+  });
   fallbackForegroundBtn.addEventListener("click", onPipReadyEstablishWebRTC);
   reopenPipBtn.addEventListener("click", reopenPipWindow);
   disconnectBtn.addEventListener("click", disconnectSession);

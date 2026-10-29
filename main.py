@@ -93,7 +93,22 @@ def prune_stale_locations() -> int:
     cutoff = time.monotonic() - LOCATION_TTL_SECONDS
     stale = [uid for uid, rec in player_locations.items() if rec["ts"] < cutoff]
     for uid in stale:
-        player_locations.pop(uid, None)
+        old_rec = player_locations.pop(uid, None)
+        if old_rec:
+            old_pin = old_rec.get("pin", "")
+            for s in list(room.peers.values()):
+                if s.roblox_user_id == uid or (old_pin and s.pin == old_pin):
+                    logger.info("Player %s timed out from Roblox -> sending roblox-disconnected", s.username)
+                    asyncio.create_task(
+                        room._safe_send(
+                            s,
+                            {
+                                "type": "roblox-disconnected",
+                                "reason": "timeout",
+                                "message": "تم إنهاء المكالمة لانقطاع الاتصال بروبلوكس",
+                            },
+                        )
+                    )
     if stale:
         _rebuild_pin_index()
     return len(stale)
@@ -165,6 +180,11 @@ class GlobalRoomManager:
 
         # Primary identity = UserId typed by the player. Legacy fallback = PIN lookup.
         matched_user_id = user_id or pin_to_user.get(pin, "")
+        if not matched_user_id and raw_username:
+            for uid, rec in player_locations.items():
+                if rec.get("username", "").strip().lower() == raw_username.strip().lower():
+                    matched_user_id = uid
+                    break
         matched_data = player_locations.get(matched_user_id, {})
         roblox_username = matched_data.get("username", "")
 
@@ -471,7 +491,22 @@ async def update_locations(
     reported_ids = {str(uid) for uid in batch.keys()}
     for uid in [u for u, rec in player_locations.items() if rec["jobId"] == job_id]:
         if uid not in reported_ids:
-            player_locations.pop(uid, None)
+            old_rec = player_locations.pop(uid, None)
+            if old_rec:
+                old_pin = old_rec.get("pin", "")
+                for s in list(room.peers.values()):
+                    if s.roblox_user_id == uid or (old_pin and s.pin == old_pin):
+                        logger.info("Player %s left Roblox -> notifying web client to disconnect", s.username)
+                        asyncio.create_task(
+                            room._safe_send(
+                                s,
+                                {
+                                    "type": "roblox-disconnected",
+                                    "reason": "left_game",
+                                    "message": "تم إنهاء المكالمة تلقائياً لمغادرتك ماب روبلوكس",
+                                },
+                            )
+                        )
 
     # 2. Upsert everyone in the batch.
     for uid, pos in batch.items():

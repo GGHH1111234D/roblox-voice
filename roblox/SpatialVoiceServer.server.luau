@@ -4,15 +4,16 @@
 	Placement: ServerScriptService/SpatialVoiceServer (Script)
 	
 	نظام الصوت المكاني ثلاثي الأبعاد (FastAPI + WebRTC 3D Spatial Audio)
-	- يولد رمز PIN فريد مكون من 4 أرقام لكل لاعب فور دخوله (مثال: "PIN: 9714").
+	- يولد رمز PIN ثابت ومستقر لكل لاعب مبني على UserId (مثال: "PIN: 8803") حتى لا يتغير عند الموت أو إعادة الدخول.
 	- يسجل السمات (Attributes) على اللاعب:
 	  * VoicePIN: رمز الربط للمايك
 	  * IsVoiceConnected: هل اللاعب متصل بالمكالمة الصوتية
-	  * IsSpeaking: هل يتحدث الآن
+	  * IsSpeaking: هل يتحدث الآن (تحريك المايك)
 	  * IsMuted: هل هو مكتوم
 	- يرسل إحداثيات اللاعبين ثلاثية الأبعاد (X, Y, Z, Yaw, PIN, Username) كل 0.5 ثانية إلى الخادم:
 	  /update_locations
-	- يستقبل قائمة activeVoicePins لتحديث حالة الاتصال وإخفاء رمز الـ PIN تلقائياً في اللعبة فور الاتصال!
+	- يستقبل قائمة المتصلين ومن يتحدث لتفعيل تحريك المايك تلقائياً وإخفاء رمز الـ PIN فور الاتصال!
+	- يبلغ السيرفر فور خروج اللاعب ليتم قطع المكالمة في المتصفح تلقائياً.
 ]]
 
 local Players = game:GetService("Players")
@@ -23,14 +24,10 @@ local RunService = game:GetService("RunService")
 --------------------------------------------------------------------------------
 -- ⚠️ إعدادات السيرفر ورابط RENDER (مهم جداً لتحديد إحداثيات 3D) ⚠️
 --------------------------------------------------------------------------------
--- استبدل YOUR-RENDER-APP باسم موقعك على Render:
--- مثال: "https://roblox-webrtc-spatial-voice.onrender.com/update_locations"
 local RENDER_URL: string = "https://roblox-voice-9tn3.onrender.com/update_locations"
-
--- الرابط المحلي للاختبار داخل استوديو فقط:
 local LOCAL_URL: string = "http://127.0.0.1:8000/update_locations"
 
--- تحديد الرابط المناسب تلقائياً:
+-- استخدام رابط Render افتراضياً، أو قراءة سمة خاصة إذا تم تحديدها:
 local customAttr = workspace:GetAttribute("VoiceBackendUrl") :: string?
 local BACKEND_URL: string = if customAttr and customAttr ~= "" then
 	customAttr
@@ -39,8 +36,8 @@ elseif string.find(RENDER_URL, "YOUR%-RENDER%-APP") == nil then
 else
 	LOCAL_URL
 
-local UPDATE_INTERVAL: number = 0.5 -- إرسال كل نصف ثانية (120 طلب/دقيقة - مسموح حتى 500 في روبلوكس)
-local SERVER_SECRET: string = ""    -- اختياري؛ مطابق لـ ROBLOX_API_SECRET
+local UPDATE_INTERVAL: number = 0.5
+local SERVER_SECRET: string = ""
 local JOB_ID: string = if game.JobId ~= "" then game.JobId else ("studio-" .. HttpService:GenerateGUID(false))
 
 --------------------------------------------------------------------------------
@@ -71,7 +68,7 @@ local syncClientEvent = ensureRemote("SyncClientVoice", "RemoteEvent") :: Remote
 local setTargetMuteEvent = ensureRemote("SetTargetMute", "RemoteEvent") :: RemoteEvent
 
 --------------------------------------------------------------------------------
--- إدارة جلسات اللاعبين والـ PIN
+-- إدارة جلسات اللاعبين والـ PIN الثابت
 --------------------------------------------------------------------------------
 type PlayerSession = {
 	player: Player,
@@ -82,20 +79,16 @@ type PlayerSession = {
 }
 
 local sessions: { [Player]: PlayerSession } = {}
-local rng = Random.new()
-local usedPins: { [string]: boolean } = {}
 
-local function generateUniquePin(): string
-	local pin: string
-	repeat
-		pin = string.format("%04d", rng:NextInteger(1000, 9999))
-	until not usedPins[pin]
-	usedPins[pin] = true
-	return pin
+-- توليد PIN ثابت ومستقر لكل لاعب يعتمد على الـ UserId الخاص به (مثال: 8803)
+local function getStablePinForPlayer(player: Player): string
+	local id = math.abs(player.UserId)
+	local num = (id % 9000) + 1000
+	return string.format("%04d", num)
 end
 
 local function onPlayerAdded(player: Player)
-	local pin = generateUniquePin()
+	local pin = getStablePinForPlayer(player)
 	local session: PlayerSession = {
 		player = player,
 		pin = pin,
@@ -111,15 +104,12 @@ local function onPlayerAdded(player: Player)
 	player:SetAttribute("IsMuted", false)
 	player:SetAttribute("InGameMuted", false)
 
-	print(string.format("[SpatialVoiceServer] Player %s joined with Voice PIN: %s", player.Name, pin))
+	print(string.format("[SpatialVoiceServer] Player %s joined with Voice PIN: %s (UserId: %d)", player.Name, pin, player.UserId))
 end
 
 local function onPlayerRemoving(player: Player)
-	local session = sessions[player]
-	if session then
-		usedPins[session.pin] = nil
-		sessions[player] = nil
-	end
+	sessions[player] = nil
+	print(string.format("[SpatialVoiceServer] Player %s left the game", player.Name))
 end
 
 Players.PlayerAdded:Connect(onPlayerAdded)
@@ -129,7 +119,6 @@ for _, p in ipairs(Players:GetPlayers()) do
 	task.spawn(onPlayerAdded, p)
 end
 
--- استقبال حالة الكتم واتجاه الكاميرا من اللاعب
 syncClientEvent.OnServerEvent:Connect(function(player: Player, lookVec: Vector3?, upVec: Vector3?, inGameMuted: boolean?)
 	local session = sessions[player]
 	if session then
@@ -153,6 +142,7 @@ type LocationEntry = {
 	y: number,
 	z: number,
 	yaw: number,
+	muted: boolean,
 }
 
 local function round2(n: number): number
@@ -179,6 +169,7 @@ local function collectLocations(): { [string]: LocationEntry }
 			y = round2(pos.Y),
 			z = round2(pos.Z),
 			yaw = round2(yaw),
+			muted = (session.inGameMuted == true),
 		}
 	end
 	return locations
@@ -190,11 +181,6 @@ end
 local isSending = false
 local isShuttingDown = false
 local consecutiveFailures = 0
-
--- فحص وتنبيه إذا كان السيرفر يعمل على سيرفر روبلوكس الحقيقي (Cloud) بدون رابط عام
-if not RunService:IsStudio() and (string.find(BACKEND_URL, "127.0.0.1", 1, true) or string.find(BACKEND_URL, "localhost", 1, true)) then
-	warn("[SpatialVoiceServer] ⚠️ تحذير: السيرفر لايف على روبلوكس ولا يمكنه الوصول إلى localhost! يرجى وضع رابط Render في السطر 28 من السكربت.")
-end
 
 task.spawn(function()
 	print(string.format("[SpatialVoiceServer] 🎙️ بدأ بث إحداثيات الصوت المكاني 3D -> %s", BACKEND_URL))
@@ -236,14 +222,58 @@ task.spawn(function()
 					return HttpService:JSONDecode(res)
 				end)
 
-				if decodeOk and typeof(data) == "table" and typeof(data.activeVoicePins) == "table" then
+				if decodeOk and typeof(data) == "table" then
 					local activeSet = {}
-					for _, p in ipairs(data.activeVoicePins) do
-						activeSet[tostring(p)] = true
+					if typeof(data.activeVoicePins) == "table" then
+						for _, p in ipairs(data.activeVoicePins) do
+							activeSet[tostring(p)] = true
+						end
 					end
+					if typeof(data.connectedVoiceUserIds) == "table" then
+						for _, uid in ipairs(data.connectedVoiceUserIds) do
+							activeSet[tostring(uid)] = true
+						end
+					end
+
+					local speakingSet = {}
+					if typeof(data.speakingVoicePins) == "table" then
+						for _, p in ipairs(data.speakingVoicePins) do
+							speakingSet[tostring(p)] = true
+						end
+					end
+					if typeof(data.speakingUserIds) == "table" then
+						for _, uid in ipairs(data.speakingUserIds) do
+							speakingSet[tostring(uid)] = true
+						end
+					end
+
+					local mutedPinsSet = {}
+					if typeof(data.mutedVoicePins) == "table" then
+						for _, p in ipairs(data.mutedVoicePins) do
+							mutedPinsSet[tostring(p)] = true
+						end
+					end
+					if typeof(data.mutedUserIds) == "table" then
+						for _, uid in ipairs(data.mutedUserIds) do
+							mutedPinsSet[tostring(uid)] = true
+						end
+					end
+
 					for player, session in pairs(sessions) do
-						local isConnected = activeSet[session.pin] == true
+						local pUid = tostring(player.UserId)
+						local isConnected = (activeSet[session.pin] == true) or (activeSet[pUid] == true)
+						local isSpeaking = isConnected and ((speakingSet[session.pin] == true) or (speakingSet[pUid] == true))
+						local isWebMuted = isConnected and ((mutedPinsSet[session.pin] == true) or (mutedPinsSet[pUid] == true))
+
 						player:SetAttribute("IsVoiceConnected", isConnected)
+						player:SetAttribute("IsSpeaking", isSpeaking)
+
+						-- مزامنة الكتم من الموقع إلى روبلوكس
+						if isConnected and session.inGameMuted ~= isWebMuted then
+							session.inGameMuted = isWebMuted
+							player:SetAttribute("InGameMuted", isWebMuted)
+							player:SetAttribute("IsMuted", isWebMuted)
+						end
 					end
 				end
 			else
