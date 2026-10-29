@@ -21,9 +21,12 @@ Responsibilities:
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import logging
 import os
 import re
+import secrets
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -69,6 +72,7 @@ class PlayerPosition(BaseModel):
     username: str = Field(default="", description="Roblox display name")
     # Legacy field kept for older Roblox scripts that still send a 4-digit PIN.
     pin: str = Field(default="")
+    muted: bool = Field(default=False, description="In-game mic mute status")
 
 
 # Global dictionary: UserId -> { userId, username, x, y, z, yaw, jobId, pin, ts }
@@ -105,6 +109,7 @@ def public_locations_snapshot() -> dict[str, dict[str, Any]]:
             "y": rec["y"],
             "z": rec["z"],
             "yaw": rec["yaw"],
+            "muted": bool(rec.get("muted", False)),
             # Browsers only spatialize peers that share their jobId (same Roblox server).
             "jobId": rec["jobId"],
         }
@@ -123,6 +128,7 @@ class PeerSession:
     username: str
     websocket: WebSocket
     is_speaking: bool = False
+    is_muted: bool = False
     last_speaking_ts: float = 0.0
 
 
@@ -326,6 +332,100 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
 # ------------------------------------------------------------------------------
 # FastAPI App
 # ------------------------------------------------------------------------------
+
+# ------------------------------------------------------------------------------
+# Persistent User Accounts & Preferences Manager
+# ------------------------------------------------------------------------------
+USERS_DB_FILE = BASE_DIR / "users_db.json"
+
+class UserManager:
+    def __init__(self, file_path: Path) -> None:
+        self.file_path = file_path
+        self.users: dict[str, dict[str, Any]] = {}
+        self.tokens: dict[str, str] = {}
+        self._load()
+
+    def _load(self) -> None:
+        if self.file_path.exists():
+            try:
+                with open(self.file_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    self.users = data.get("users", {})
+            except Exception:
+                self.users = {}
+
+    def _save(self) -> None:
+        try:
+            with open(self.file_path, "w", encoding="utf-8") as f:
+                json.dump({"users": self.users}, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
+
+    @staticmethod
+    def hash_password(password: str) -> str:
+        return hashlib.sha256(password.encode("utf-8")).hexdigest()
+
+    def register(self, username: str, password: str) -> tuple[bool, str, dict[str, Any]]:
+        uname = username.strip()
+        if len(uname) < 2 or len(password) < 3:
+            return False, "اسم المستخدم يجب أن يتكون من حرفين على الأقل وكلمة المرور من 3 خانات", {}
+        if uname in self.users:
+            return False, "اسم المستخدم مسجل مسبقاً، يرجى تسجيل الدخول", {}
+
+        default_settings = {
+            "preferredMicId": "",
+            "mutedUsers": [],
+            "blockedUsers": [],
+            "micSensitivity": 4,
+            "noiseSuppression": True,
+        }
+        self.users[uname] = {
+            "username": uname,
+            "password_hash": self.hash_password(password),
+            "created_at": time.time(),
+            "settings": default_settings,
+        }
+        self._save()
+        token = secrets.token_hex(20)
+        self.tokens[token] = uname
+        return True, token, default_settings
+
+    def login(self, username: str, password: str) -> tuple[bool, str, dict[str, Any]]:
+        uname = username.strip()
+        if uname not in self.users:
+            return False, "اسم المستخدم غير موجود", {}
+        if self.users[uname].get("password_hash") != self.hash_password(password):
+            return False, "كلمة المرور غير صحيحة", {}
+
+        token = secrets.token_hex(20)
+        self.tokens[token] = uname
+        return True, token, self.users[uname].get("settings", {})
+
+    def get_user_by_token(self, token: str) -> dict[str, Any] | None:
+        uname = self.tokens.get(token)
+        if uname and uname in self.users:
+            return self.users[uname]
+        return None
+
+    def update_settings(self, token: str, settings: dict[str, Any]) -> bool:
+        user = self.get_user_by_token(token)
+        if not user:
+            return False
+        user.setdefault("settings", {}).update(settings)
+        self._save()
+        return True
+
+user_mgr = UserManager(USERS_DB_FILE)
+
+
+class AuthPayload(BaseModel):
+    username: str
+    password: str
+
+class SettingsPayload(BaseModel):
+    token: str
+    settings: dict[str, Any]
+
 app = FastAPI(
     title="Roblox WebRTC 3D Spatial Voice",
     version="3.0.0",
@@ -385,6 +485,7 @@ async def update_locations(
             "y": pos.y,
             "z": pos.z,
             "yaw": pos.yaw,
+            "muted": bool(pos.muted),
             "jobId": job_id,
             "pin": pos.pin.strip(),
             "ts": now,
@@ -396,12 +497,24 @@ async def update_locations(
     connected_user_ids = sorted(
         {s.roblox_user_id for s in room.peers.values() if s.roblox_user_id}
     )
+    # Bidirectional Mute Sync: if player muted in-game, notify their connected web app
+    for s in list(room.peers.values()):
+        rec = player_locations.get(s.roblox_user_id) or (player_locations.get(pin_to_user.get(s.pin, "")) if s.pin else None)
+        if rec and "muted" in rec:
+            is_game_muted = bool(rec["muted"])
+            if s.is_muted != is_game_muted:
+                s.is_muted = is_game_muted
+                asyncio.create_task(room._safe_send(s, {"type": "sync-mute", "muted": is_game_muted}))
+
     speaking_pins = sorted(
         {s.pin for s in room.peers.values() if s.pin and (s.is_speaking or (now - s.last_speaking_ts < 1.0))}
     )
     speaking_user_ids = sorted(
         {s.roblox_user_id for s in room.peers.values() if s.roblox_user_id and (s.is_speaking or (now - s.last_speaking_ts < 1.0))}
     )
+    muted_pins = sorted({s.pin for s in room.peers.values() if s.pin and s.is_muted})
+    muted_user_ids = sorted({s.roblox_user_id for s in room.peers.values() if s.roblox_user_id and s.is_muted})
+
     return JSONResponse(
         {
             "status": "ok",
@@ -411,9 +524,43 @@ async def update_locations(
             "activeVoicePins": active_connected_pins,
             "speakingVoicePins": speaking_pins,
             "speakingUserIds": speaking_user_ids,
+            "mutedVoicePins": muted_pins,
+            "mutedUserIds": muted_user_ids,
         }
     )
 
+
+
+# ------------------------------------------------------------------------------
+# Auth & User Profile Endpoints
+# ------------------------------------------------------------------------------
+@app.post("/api/register")
+async def api_register(req: AuthPayload) -> JSONResponse:
+    ok, token_or_err, settings = user_mgr.register(req.username, req.password)
+    if not ok:
+        raise HTTPException(status_code=400, detail=token_or_err)
+    return JSONResponse({"status": "ok", "token": token_or_err, "username": req.username, "settings": settings})
+
+@app.post("/api/login")
+async def api_login(req: AuthPayload) -> JSONResponse:
+    ok, token_or_err, settings = user_mgr.login(req.username, req.password)
+    if not ok:
+        raise HTTPException(status_code=400, detail=token_or_err)
+    return JSONResponse({"status": "ok", "token": token_or_err, "username": req.username, "settings": settings})
+
+@app.get("/api/me")
+async def api_me(token: str = Query(default="")) -> JSONResponse:
+    user = user_mgr.get_user_by_token(token)
+    if not user:
+        raise HTTPException(status_code=401, detail="الجلسة منتهية أو غير صالحة")
+    return JSONResponse({"status": "ok", "username": user["username"], "settings": user.get("settings", {})})
+
+@app.post("/api/save-settings")
+async def api_save_settings(req: SettingsPayload) -> JSONResponse:
+    ok = user_mgr.update_settings(req.token, req.settings)
+    if not ok:
+        raise HTTPException(status_code=401, detail="فشل حفظ الإعدادات، يرجى تسجيل الدخول")
+    return JSONResponse({"status": "ok"})
 
 @app.get("/health")
 async def health_check() -> JSONResponse:
@@ -476,6 +623,16 @@ async def signaling_websocket(
                 session.is_speaking = is_spk
                 if is_spk:
                     session.last_speaking_ts = time.monotonic()
+                continue
+
+            if msg_type == "set-mute":
+                session.is_muted = bool(data.get("muted", False))
+                continue
+
+            if msg_type == "peer-block":
+                target_id = data.get("target")
+                if isinstance(target_id, str) and target_id:
+                    await room.relay_to_peer(session, target_id, data)
                 continue
 
             if msg_type in ("offer", "answer", "ice-candidate"):

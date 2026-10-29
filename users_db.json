@@ -1,0 +1,20 @@
+{
+  "users": {
+    "TestHero": {
+      "username": "TestHero",
+      "password_hash": "4e604f8899bb90a7b3bc86b83a63c0476231271757e66d4f0f3139abe10e1dec",
+      "created_at": 1793300949.2498891,
+      "settings": {
+        "preferredMicId": "mic-123",
+        "mutedUsers": [
+          "456"
+        ],
+        "blockedUsers": [
+          "789"
+        ],
+        "micSensitivity": 4,
+        "noiseSuppression": true
+      }
+    }
+  }
+}

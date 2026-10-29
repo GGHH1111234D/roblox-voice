@@ -1,43 +1,34 @@
 /**
- * Roblox Aura Voice — Discord-Style Floating PiP Overlay + 3D WebRTC Engine
- * =========================================================================
- * مظهر وتقنيات اتصال ديسكورد الرسمية:
- * 1. محرك شاشة ديسكورد العائمة (Discord Overlay Engine) على كانفاس 480x240.
- * 2. نافذة Picture-in-Picture تطفو فوق روبلوكس مع دوائر التحدث الخضراء المشعة وعداد المكالمة.
- * 3. صوت محيطي 3D حقيقي (HRTF Panner) بمقاييس روبلوكس (Studs).
- * 4. ربط فوري برمز الـ PIN المكون من 4 أرقام فقط (بدون ديسكورد خارجي ولا بوتات).
+ * Roblox Aura Voice — Clean 3D WebRTC Engine + Minimalist Black Box PiP
+ * =====================================================================
+ * 1. صوت مكاني 3D حقيقي عبر Web Audio API (HRTF Panner) بمقاييس روبلوكس (Studs).
+ * 2. نافذة PiP مصغرة فائقة الخفة (مربع أسود خالص 160x160) لضمان استمرار المايك بالخلفية بدون استهلاك بطارية أو معالج.
+ * 3. المظاهر والشاشات والفقاعات التفاعلية تظل بالكامل داخل روبلوكس فقط (Overhead Bubbles & Topbar).
+ * 4. مزامنة الكتم الثنائية (Bidirectional Mute Sync): الكتم داخل روبلوكس يكتم الموقع، والعكس صحيح.
+ * 5. نظام الكتم والحظر المتطور:
+ *    - كتم (Mute): أنت لا تسمعه، ولكنه يسمعك.
+ *    - حظر (Block): حظر متبادل كامل (لا يسمعك ولا تسمعه).
+ * 6. اختيار المايك والتبديل المباشر بين أجهزة الصوت + التحكم بالحساسية.
+ * 7. نظام حسابات متكامل لحفظ المايك المفضل وقوائم الحظر والكتم سحابياً.
+ * 8. إنهاء المكالمة تلقائياً عند مغادرة ماب روبلوكس.
  */
 
 (() => {
   "use strict";
 
   // ---------------------------------------------------------------------------
-  // 3D audio tuning. All distances are in Roblox STUDS: we feed Roblox world
-  // coordinates straight into the Web Audio API, so 1 Web Audio unit = 1 stud.
+  // 3D Audio Tuning (Roblox STUDS -> Web Audio API)
   // ---------------------------------------------------------------------------
   const SPATIAL_CONFIG = {
-    // PannerNode distance model ("inverse"):
-    //   gain = REF / (REF + ROLLOFF * (max(d, REF) - REF))
-    //   d = 6 -> 1.00 | d = 15 -> 0.36 | d = 30 -> 0.17 | d = 55 -> 0.09
-    REF_DISTANCE: 6,           // full volume within 6 studs
-    ROLLOFF_FACTOR: 1.2,       // how fast volume drops past REF_DISTANCE
-    // The inverse model never reaches true silence (and simply stops attenuating
-    // past `maxDistance`), so we add our own linear fade-to-zero on a GainNode:
-    FADE_START_DISTANCE: 55,   // start fading out at 55 studs...
-    MAX_HEARING_DISTANCE: 80,  // ...completely silent at 80 studs
-
-    // Positions arrive every 0.5s. Instead of jumping (which causes audible clicks
-    // and "teleporting" voices) every AudioParam glides toward its new target with
-    // setTargetAtTime(). τ = 0.15s reaches ~95% of the target after 3τ ≈ 0.45s,
-    // i.e. just before the next update arrives -> continuous, smooth motion.
+    REF_DISTANCE: 6,
+    ROLLOFF_FACTOR: 1.2,
+    FADE_START_DISTANCE: 55,
+    MAX_HEARING_DISTANCE: 80,
     SMOOTHING_TIME_CONSTANT: 0.15,
-
-    // Directional voices: a speaker facing AWAY from you sounds quieter, like real
-    // life. Implemented with the PannerNode's sound cone + the speaker's yaw.
     DIRECTIONAL_VOICE: true,
-    CONE_INNER_ANGLE: 140,     // full volume inside this cone (degrees) in front of the speaker
-    CONE_OUTER_ANGLE: 320,     // outside this cone the volume is CONE_OUTER_GAIN
-    CONE_OUTER_GAIN: 0.45,     // 45% volume when they talk with their back to you
+    CONE_INNER_ANGLE: 140,
+    CONE_OUTER_ANGLE: 320,
+    CONE_OUTER_GAIN: 0.45,
   };
 
   const RTC_CONFIG = {
@@ -47,12 +38,6 @@
       { urls: "stun:stun.cloudflare.com:3478" },
     ],
   };
-
-  function buildSignalingUrl(pin) {
-    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const params = new URLSearchParams({ pin: pin || "" });
-    return `${protocol}//${window.location.host}/ws?${params.toString()}`;
-  }
 
   // ---------------------------------------------------------------------------
   // عناصر الواجهة (DOM Elements)
@@ -69,7 +54,58 @@
   const pinInput = document.getElementById("pin-input");
   const identityGroup = document.getElementById("identity-group");
   const togglePinMaskBtn = document.getElementById("toggle-pin-mask");
+  const micSelect = document.getElementById("mic-select");
+  const settingsMicSelect = document.getElementById("settings-mic-select");
 
+  const alertBanner = document.getElementById("alert-banner");
+  const globalStatusDot = document.getElementById("global-status-dot");
+  const pipStatusVal = document.getElementById("pip-status-val");
+  const wsStatusVal = document.getElementById("ws-status-val");
+  const spatialStatusVal = document.getElementById("spatial-status-val");
+  const micStateText = document.getElementById("mic-state-text");
+  const micMeterBar = document.getElementById("mic-meter-bar");
+  const debugLogEl = document.getElementById("debug-log");
+
+  // Navigation & Modals Elements
+  const openPlayersBtn = document.getElementById("open-players-btn");
+  const openSettingsBtn = document.getElementById("open-settings-btn");
+  const openAccountBtn = document.getElementById("open-account-btn");
+  const accountPillText = document.getElementById("account-pill-text");
+  const navPlayerCount = document.getElementById("nav-player-count");
+
+  const playersModal = document.getElementById("players-modal");
+  const closePlayersBtn = document.getElementById("close-players-btn");
+  const playersListContainer = document.getElementById("players-list-container");
+
+  const settingsModal = document.getElementById("settings-modal");
+  const closeSettingsBtn = document.getElementById("close-settings-btn");
+  const micSensitivitySlider = document.getElementById("mic-sensitivity-slider");
+  const sensitivityVal = document.getElementById("sensitivity-val");
+  const noiseSuppressCheck = document.getElementById("noise-suppress-check");
+  const saveSettingsBtn = document.getElementById("save-settings-btn");
+
+  const accountModal = document.getElementById("account-modal");
+  const closeAccountBtn = document.getElementById("close-account-btn");
+  const tabLoginBtn = document.getElementById("tab-login-btn");
+  const tabRegisterBtn = document.getElementById("tab-register-btn");
+  const authForm = document.getElementById("auth-form");
+  const authUsername = document.getElementById("auth-username");
+  const authPassword = document.getElementById("auth-password");
+  const authSubmitBtn = document.getElementById("auth-submit-btn");
+  const authFormsWrap = document.getElementById("auth-forms-wrap");
+  const profileWrap = document.getElementById("profile-wrap");
+  const profileUsername = document.getElementById("profile-username");
+  const profileAvatar = document.getElementById("profile-avatar");
+  const profileMutedCount = document.getElementById("profile-muted-count");
+  const profileBlockedCount = document.getElementById("profile-blocked-count");
+  const logoutBtn = document.getElementById("logout-btn");
+
+  // PiP Elements
+  const pipCanvas = document.getElementById("pipCanvas");
+  const pipCtx = pipCanvas.getContext("2d", { alpha: false });
+  const pipVideo = document.getElementById("pip-video");
+
+  // Streamer Mask Toggle for PIN
   if (togglePinMaskBtn && pinInput) {
     let isMasked = false;
     togglePinMaskBtn.addEventListener("click", () => {
@@ -79,24 +115,6 @@
     });
   }
 
-  const alertBanner = document.getElementById("alert-banner");
-  const globalStatusDot = document.getElementById("global-status-dot");
-  const globalStatusLabel = document.getElementById("global-status-label");
-  const pipStatusVal = document.getElementById("pip-status-val");
-  const wsStatusVal = document.getElementById("ws-status-val");
-  const spatialStatusVal = document.getElementById("spatial-status-val");
-  const micStateText = document.getElementById("mic-state-text");
-  const micMeterBar = document.getElementById("mic-meter-bar");
-
-  const discordGrid = document.getElementById("discord-grid");
-  const peerCountBadge = document.getElementById("peer-count-badge");
-  const remoteAudioContainer = document.getElementById("remote-audio-container");
-  const debugLogEl = document.getElementById("debug-log");
-
-  const pipCanvas = document.getElementById("pipCanvas");
-  const pipCtx = pipCanvas.getContext("2d", { alpha: false });
-  const pipVideo = document.getElementById("pip-video");
-
   try {
     pinInput.value = localStorage.getItem("rbx_aura_pin") || "";
   } catch (_) {}
@@ -104,8 +122,8 @@
   // ---------------------------------------------------------------------------
   // حالة التطبيق (Runtime State)
   // ---------------------------------------------------------------------------
-  let myPin = ""; // 4-digit PIN entered by player
-  let myRobloxUserId = ""; // resolved automatically from myPin via pinMap
+  let myPin = "";
+  let myRobloxUserId = "";
   let latestPinMap = {};
   let myUsername = "أنا";
   let myPeerId = null;
@@ -114,20 +132,15 @@
   let canvasVideoStream = null;
   let combinedPipStream = null;
 
-  let isOverlayRunning = false;
-  let overlayRafId = null;
-  let overlayIntervalId = null;
-  let callStartTime = 0;
-
   let audioContext = null;
   let localAnalyser = null;
+  let localSourceNode = null;
   let micLevelPct = 0;
   let isSelfSpeaking = false;
   let lastBroadcastSpeaking = false;
   let lastVoiceActivityTime = 0;
-  let hasJoinedRobloxGame = false;
-  let missingLocationTicks = 0;
   let meterRafId = null;
+  let micSensitivityThreshold = 4; // default 4%
 
   let ws = null;
   let wsHeartbeatInterval = null;
@@ -136,16 +149,27 @@
   let awaitingSecondTapForPiP = false;
   let isIntentionalDisconnect = false;
 
-  let latestLocations = {}; // { [userId]: { userId, username, x, y, z, yaw, jobId } }
-  let isListenerPlaced = false; // first listener placement snaps instead of gliding
+  let latestLocations = {};
+  let isListenerPlaced = false;
+  let hasJoinedRobloxGame = false;
+  let missingLocationTicks = 0;
+
+  // Moderation Sets (Muted & Blocked players by UserId or PeerId)
+  const locallyMutedUsers = new Set();  // "أنت لا تسمعه، ولكنه يسمعك"
+  const locallyBlockedUsers = new Set(); // "حظر متبادل: لا يسمعك ولا تسمعه"
+
+  // User Account & Cloud Settings
+  let currentUser = null;
+  let authToken = localStorage.getItem("aura_auth_token") || "";
+  let selectedMicrophoneId = localStorage.getItem("aura_preferred_mic") || "";
 
   /**
-   * الأقران المتصلون في الغرفة
+   * خريطة الأقران المتصلين
    */
   const peers = new Map();
 
   // ---------------------------------------------------------------------------
-  // دوال مساعدة
+  // Logging & Utilities
   // ---------------------------------------------------------------------------
   function log(tag, message) {
     const time = new Date().toLocaleTimeString([], { hour12: false });
@@ -169,362 +193,178 @@
   }
 
   function updateGlobalStatus(label, dotState = "") {
-    globalStatusLabel.textContent = label;
     globalStatusDot.className = "pulse-dot" + (dotState ? ` ${dotState}` : "");
   }
 
   function updatePipUiState(active) {
     isPipActive = active;
     if (active) {
-      pipStatusVal.textContent = "نافذة ديسكورد نشطة";
+      pipStatusVal.textContent = "نشط بالخلفية 🟢";
       pipStatusVal.className = "pill-value ok";
       reopenPipBtn.classList.add("hidden");
       if (ws && ws.readyState === WebSocket.OPEN) {
-        updateGlobalStatus("نافذة ديسكورد عائمة فوق روبلوكس", "online");
+        updateGlobalStatus("المكالمة نشطة بالخلفية", "online");
       }
     } else {
       pipStatusVal.textContent = localAudioStream ? "متوقف مؤقتاً" : "معطل";
       pipStatusVal.className = localAudioStream ? "pill-value warn" : "pill-value";
       if (localAudioStream && ws) {
         reopenPipBtn.classList.remove("hidden");
-        updateGlobalStatus("أغلقت نافذة ديسكورد العائمة", "warning");
+        updateGlobalStatus("المايك يحتاج إعادة فتح PiP", "warning");
       }
     }
   }
 
-  function formatCallDuration(ms) {
-    const totalSec = Math.max(0, Math.floor(ms / 1000));
-    const mins = String(Math.floor(totalSec / 60)).padStart(2, "0");
-    const secs = String(totalSec % 60).padStart(2, "0");
-    return `${mins}:${secs}`;
-  }
-
-  function drawRoundedRect(ctx, x, y, w, h, r) {
-    const rad = Math.min(r, w / 2, h / 2);
-    ctx.beginPath();
-    ctx.moveTo(x + rad, y);
-    ctx.arcTo(x + w, y, x + w, y + h, rad);
-    ctx.arcTo(x + w, y + h, x, y + h, rad);
-    ctx.arcTo(x, y + h, x, y, rad);
-    ctx.arcTo(x, y + w, x, y, rad);
-    ctx.closePath();
-  }
-
   // ---------------------------------------------------------------------------
-  // محرك رسم كرت ديسكورد العائم على الكانفاس (Discord PiP Overlay Engine)
+  // PiP Black Box Engine (مربع أسود خالص 160x160 فائق الخفة)
   // ---------------------------------------------------------------------------
-  function renderFloatingDiscordOverlay() {
-    if (!isOverlayRunning) return;
+  function renderBlackBoxPiP() {
+    if (!pipCtx) return;
+    pipCtx.fillStyle = "#000000";
+    pipCtx.fillRect(0, 0, 160, 160);
 
-    const W = pipCanvas.width;
-    const H = pipCanvas.height;
-    const now = Date.now();
-
-    // 1. خلفية كرت ديسكورد المتدرجة الداكنة
-    const bgGrad = pipCtx.createLinearGradient(0, 0, 0, H);
-    bgGrad.addColorStop(0, "#141a29");
-    bgGrad.addColorStop(1, "#090d16");
-    pipCtx.fillStyle = bgGrad;
-    pipCtx.fillRect(0, 0, W, H);
-
-    // الشريط المضيء العلوي المتفاعل (أخضر عند التحدث، أحمر عند الكتم، بلوربل عند الاتصال)
-    pipCtx.fillStyle = isMicMuted
-      ? "#ef4444"
-      : isSelfSpeaking
-      ? "#22c55e"
-      : "#5865f2";
-    pipCtx.fillRect(0, 0, W, 5);
-
-    // 2. الشريط العلوي (اسم المكالمة + عداد الوقت + نقطة الحالة)
-    drawRoundedRect(pipCtx, 14, 14, W - 28, 38, 11);
-    pipCtx.fillStyle = "rgba(15, 23, 42, 0.9)";
-    pipCtx.fill();
-    pipCtx.strokeStyle = "rgba(255, 255, 255, 0.08)";
-    pipCtx.lineWidth = 1;
-    pipCtx.stroke();
-
-    // نقطة الحالة
-    pipCtx.beginPath();
-    pipCtx.arc(W - 32, 33, 6, 0, Math.PI * 2);
-    pipCtx.fillStyle = isMicMuted ? "#ef4444" : "#22c55e";
-    pipCtx.fill();
-
-    // عنوان المكالمة
-    pipCtx.font = "bold 14px system-ui, -apple-system, Segoe UI, sans-serif";
-    pipCtx.textAlign = "right";
-    pipCtx.textBaseline = "middle";
-    pipCtx.fillStyle = "#f8fafc";
-    const headerTitle = isMicMuted
-      ? "المايك مكتوم 🔇"
-      : isSelfSpeaking
-      ? "أنت تتحدث الآن 🎙️"
-      : "AURA VOICE (صوت مكاني 3D)";
-    pipCtx.fillText(headerTitle, W - 46, 33);
-
-    // عداد المكالمة في اليسار
-    pipCtx.textAlign = "left";
-    pipCtx.font = "bold 14px ui-monospace, SFMono-Regular, Consolas, monospace";
-    pipCtx.fillStyle = "#a5b4fc";
-    const elapsed = callStartTime > 0 ? formatCallDuration(now - callStartTime) : "00:00";
-    pipCtx.fillText(elapsed, 28, 33);
-
-    // 3. جمع اللاعبين (أنت + الأقران المقربين) لعرض الأفاتارات بأسلوب ديسكورد
-    const slots = [
-      {
-        name: myUsername || "أنا",
-        sub: isMicMuted ? "مكتوم" : isSelfSpeaking ? "يتحدث..." : "متصل",
-        speaking: isSelfSpeaking,
-        muted: isMicMuted,
-        isSelf: true,
-      },
-    ];
-
-    for (const [peerId, info] of peers.entries()) {
-      if (slots.length >= 4) break;
-      slots.push({
-        name: info.username || `لاعب ${info.pin || peerId.slice(0, 4)}`,
-        sub: info.spatialSummary || "متصل",
-        speaking: Boolean(info.isSpeaking),
-        muted: false,
-        isSelf: false,
-      });
-    }
-
-    // رسم خانات الأفاتارات
-    const count = slots.length;
-    const slotWidth = Math.min(108, (W - 28) / count);
-    const startX = (W - slotWidth * count) / 2;
-    const centerY = 126;
-
-    slots.forEach((slot, idx) => {
-      const cx = startX + slotWidth * idx + slotWidth / 2;
-
-      // تأثير التوهج الأخضر المشع الخاص بديسكورد عند التحدث (Speaking Glow Ring)
-      if (slot.speaking) {
-        const pulse = slot.isSelf
-          ? Math.max(3, (micLevelPct / 100) * 8)
-          : 4 + (Math.sin(now / 120) + 1) * 2;
-
-        pipCtx.beginPath();
-        pipCtx.arc(cx, centerY, 30 + pulse * 0.45, 0, Math.PI * 2);
-        pipCtx.fillStyle = "rgba(34, 197, 94, 0.28)";
-        pipCtx.fill();
-
-        pipCtx.beginPath();
-        pipCtx.arc(cx, centerY, 29, 0, Math.PI * 2);
-        pipCtx.lineWidth = 3.5;
-        pipCtx.strokeStyle = "#22c55e";
-        pipCtx.stroke();
-      } else if (slot.muted) {
-        pipCtx.beginPath();
-        pipCtx.arc(cx, centerY, 28, 0, Math.PI * 2);
-        pipCtx.lineWidth = 2;
-        pipCtx.strokeStyle = "rgba(239, 68, 68, 0.7)";
-        pipCtx.stroke();
-      }
-
-      // دائرة الأفاتار
-      pipCtx.beginPath();
-      pipCtx.arc(cx, centerY, 24, 0, Math.PI * 2);
-      pipCtx.fillStyle = slot.isSelf ? "#1e293b" : "#172033";
-      pipCtx.fill();
-
-      // الحروف الأولى من الاسم (Initials)
-      const initials = slot.name.replace(/[^a-zA-Z0-9\u0600-\u06FF]/g, "").slice(0, 2).toUpperCase() || "🎙️";
-      pipCtx.font = "bold 15px system-ui, -apple-system, sans-serif";
-      pipCtx.textAlign = "center";
-      pipCtx.textBaseline = "middle";
-      pipCtx.fillStyle = slot.speaking ? "#86efac" : "#e2e8f0";
-      pipCtx.fillText(initials, cx, centerY);
-
-      // أيقونة الكتم الصغيرة الحمراء أسفل الأفاتار
-      if (slot.muted) {
-        pipCtx.beginPath();
-        pipCtx.arc(cx + 17, centerY + 17, 7, 0, Math.PI * 2);
-        pipCtx.fillStyle = "#ef4444";
-        pipCtx.fill();
-        pipCtx.strokeStyle = "#0f172a";
-        pipCtx.lineWidth = 2;
-        pipCtx.stroke();
-      }
-
-      // اسم اللاعب أسفل الأفاتار
-      pipCtx.font = "bold 12px system-ui, -apple-system, sans-serif";
-      pipCtx.textAlign = "center";
-      pipCtx.textBaseline = "top";
-      pipCtx.fillStyle = slot.speaking ? "#86efac" : "#cbd5e1";
-      const shortName = slot.name.length > 9 ? slot.name.slice(0, 8) + ".." : slot.name;
-      pipCtx.fillText(shortName, cx, centerY + 34);
-
-      // المسافة أو الحالة أسفل الاسم
-      pipCtx.font = "10px ui-monospace, SFMono-Regular, monospace";
-      pipCtx.fillStyle = slot.speaking ? "#4ade80" : "#94a3b8";
-      const shortSub = slot.sub.length > 13 ? slot.sub.slice(0, 12) + ".." : slot.sub;
-      pipCtx.fillText(shortSub, cx, centerY + 49);
-    });
-
-    // 4. مؤشر الحالة السفلي الدقيق
-    pipCtx.font = "11px system-ui, -apple-system, sans-serif";
-    pipCtx.textAlign = "center";
-    pipCtx.fillStyle = "#64748b";
-    pipCtx.fillText(`PIN: ${myPin || "----"} • Aura 3D Voice Engine`, W / 2, H - 14);
-  }
-
-  function startFloatingDiscordOverlayLoop() {
-    isOverlayRunning = true;
-    callStartTime = Date.now();
-
-    const loop = () => {
-      if (!isOverlayRunning) return;
-      renderFloatingDiscordOverlay();
-      overlayRafId = requestAnimationFrame(loop);
-    };
-    overlayRafId = requestAnimationFrame(loop);
-
-    // إبقاء الرسوم مستمرة بمعدل 14 إطار بالثانية حتى عندما يكون المتصفح بالخلفية
-    overlayIntervalId = setInterval(renderFloatingDiscordOverlay, 70);
-  }
-
-  function stopFloatingDiscordOverlayLoop() {
-    isOverlayRunning = false;
-    cancelAnimationFrame(overlayRafId);
-    clearInterval(overlayIntervalId);
-    callStartTime = 0;
-  }
-
-  // ---------------------------------------------------------------------------
-  // واجهة كروت ديسكورد في صفحة الويب
-  // ---------------------------------------------------------------------------
-  function renderDiscordPeersGrid() {
-    peerCountBadge.textContent = `${peers.size} ${peers.size === 1 ? "لاعب" : "لاعبين"}`;
-    discordGrid.innerHTML = "";
-
-    // بطاقة اللاعب نفسه
-    const selfCard = document.createElement("div");
-    selfCard.className = `discord-user-card${isSelfSpeaking ? " speaking" : ""}${isMicMuted ? " muted" : ""}`;
-
-    const selfWrap = document.createElement("div");
-    selfWrap.className = "discord-avatar-wrap";
-
-    const selfAvatar = document.createElement("div");
-    selfAvatar.className = "discord-avatar";
-    selfAvatar.textContent = myUsername.slice(0, 2).toUpperCase() || "أنا";
-    selfWrap.appendChild(selfAvatar);
-
+    // نقطة ميكرو صغيرة جداً في المنتصف لتحديث فريم الفيديو لنظام iOS دون أي معالجة ثقيلة
     if (isMicMuted) {
-      const muteDot = document.createElement("span");
-      muteDot.className = "mute-badge-icon";
-      muteDot.textContent = "✕";
-      selfWrap.appendChild(muteDot);
-    }
-    selfCard.appendChild(selfWrap);
-
-    const selfName = document.createElement("span");
-    selfName.className = "discord-username";
-    selfName.textContent = myUsername + " (أنت)";
-    selfCard.appendChild(selfName);
-
-    const selfSub = document.createElement("span");
-    selfSub.className = "discord-status-sub";
-    selfSub.textContent = isMicMuted ? "مكتوم" : isSelfSpeaking ? "يتحدث..." : `PIN: ${myPin || "—"}`;
-    selfCard.appendChild(selfSub);
-
-    discordGrid.appendChild(selfCard);
-
-    // بطاقات باقي اللاعبين
-    if (peers.size === 0) {
-      return;
-    }
-
-    for (const [peerId, info] of peers.entries()) {
-      const card = document.createElement("div");
-      card.className = `discord-user-card${info.isSpeaking ? " speaking" : ""}`;
-
-      const avatarWrap = document.createElement("div");
-      avatarWrap.className = "discord-avatar-wrap";
-
-      const avatar = document.createElement("div");
-      avatar.className = "discord-avatar";
-      avatar.textContent = info.username.slice(0, 2).toUpperCase() || "🎙️";
-      avatarWrap.appendChild(avatar);
-
-      card.appendChild(avatarWrap);
-
-      const nameSpan = document.createElement("span");
-      nameSpan.className = "discord-username";
-      nameSpan.textContent = info.username;
-      card.appendChild(nameSpan);
-
-      const spatialSpan = document.createElement("span");
-      spatialSpan.className = "discord-spatial-sub";
-      spatialSpan.textContent = info.spatialSummary || "بانتظار الإحداثيات";
-      card.appendChild(spatialSpan);
-
-      discordGrid.appendChild(card);
+      pipCtx.fillStyle = "#ef4444";
+      pipCtx.beginPath();
+      pipCtx.arc(80, 80, 2, 0, Math.PI * 2);
+      pipCtx.fill();
+    } else if (isSelfSpeaking) {
+      pipCtx.fillStyle = "#22c55e";
+      pipCtx.beginPath();
+      pipCtx.arc(80, 80, 3, 0, Math.PI * 2);
+      pipCtx.fill();
     }
   }
 
-  // ===========================================================================
-  // 3D SPATIAL AUDIO ENGINE  (Web Audio API: AudioContext + AudioListener + PannerNode)
-  // ===========================================================================
-  //
-  // HOW THE 3D PANNING WORKS
-  // ------------------------
-  // An AudioContext renders a graph of audio nodes on a dedicated real-time audio
-  // thread. Every remote WebRTC peer gets its own little chain:
-  //
-  //   MediaStreamSource ──► PannerNode ──► GainNode ──► AudioContext.destination
-  //   (their mic, via WebRTC)  (3D placement)  (hearing-range cutoff)   (your speakers)
-  //          └──────────────► AnalyserNode  (green "speaking" ring in the UI only)
-  //
-  // * The AudioContext owns exactly ONE AudioListener = "my ears". We move it to MY
-  //   character's Roblox position and rotate it to MY character's facing direction.
-  // * Each PannerNode = "a mouth" in that same 3D space. We move it to that PEER's
-  //   Roblox position and rotate it to THEIR facing direction.
-  // * For every audio block (128 samples, ~3ms) the browser itself computes the vector
-  //   listener -> panner, converts it into the listener's local frame, and derives:
-  //     - Distance  -> volume, from distanceModel / refDistance / rolloffFactor
-  //                    (they walk away -> quieter).
-  //     - Azimuth   -> left/right: a voice on my right is louder AND arrives slightly
-  //                    earlier in my right ear (inter-aural level + time difference).
-  //     - Elevation -> above/below cue (someone on a balcony sounds "up there").
-  //     - Cone      -> a speaker facing away from me is quieter (coneInner/Outer/OuterGain).
-  // * panningModel = "HRTF" convolves each voice with Head-Related Transfer Functions
-  //   (measured filters of how a real head and outer ear colour sound arriving from each
-  //   direction). On headphones this even separates front from back. "equalpower" would be
-  //   a cheaper plain stereo pan with no front/back or elevation cues.
-  //
-  // Roblox and Web Audio use the SAME right-handed axes (+X = right, +Y = up, default
-  // forward = -Z), so raw Roblox coordinates go straight into the listener/panners.
-  // We never compute "relative" positions for the audio ourselves — the listener/panner
-  // pair does that natively, per audio block, which keeps the math in one place and
-  // lets both sides glide smoothly between our 0.5s updates.
-  // ===========================================================================
+  let pipIntervalId = null;
+  function startBlackBoxPiPLoop() {
+    renderBlackBoxPiP();
+    // تحديث خفيف جداً بمعدل مرة كل 1.5 ثانية فقط لإبقاء مسار الفيديو حياً في iOS
+    clearInterval(pipIntervalId);
+    pipIntervalId = setInterval(renderBlackBoxPiP, 1500);
+  }
 
-  // A jump bigger than this between two 0.5s updates is a teleport/respawn, not walking
-  // (default WalkSpeed 16 = 8 studs per update): snap instead of "flying" the voice across the map.
+  function stopBlackBoxPiPLoop() {
+    clearInterval(pipIntervalId);
+    renderBlackBoxPiP();
+  }
+
+  // ---------------------------------------------------------------------------
+  // قائمة وإدارة أجهزة المايكروفون (Microphone Selection & Switching)
+  // ---------------------------------------------------------------------------
+  async function loadAudioDevices() {
+    try {
+      if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) return;
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const audioInputs = devices.filter((d) => d.kind === "audioinput");
+
+      micSelect.innerHTML = "";
+      settingsMicSelect.innerHTML = "";
+
+      if (audioInputs.length === 0) {
+        const opt = document.createElement("option");
+        opt.value = "";
+        opt.textContent = "المايك الافتراضي للجهاز";
+        micSelect.appendChild(opt);
+        settingsMicSelect.appendChild(opt.cloneNode(true));
+        return;
+      }
+
+      audioInputs.forEach((device, index) => {
+        const label = device.label || `مايك إدخال ${index + 1}`;
+        const opt = document.createElement("option");
+        opt.value = device.deviceId;
+        opt.textContent = label;
+
+        if (device.deviceId === selectedMicrophoneId) {
+          opt.selected = true;
+        }
+
+        micSelect.appendChild(opt);
+        settingsMicSelect.appendChild(opt.cloneNode(true));
+      });
+    } catch (err) {
+      log("Devices", `تعذر سرد أجهزة الصوت: ${err.message}`);
+    }
+  }
+
+  async function switchAudioDevice(deviceId) {
+    selectedMicrophoneId = deviceId;
+    localStorage.setItem("aura_preferred_mic", deviceId);
+    micSelect.value = deviceId;
+    settingsMicSelect.value = deviceId;
+
+    if (currentUser && authToken) {
+      syncSettingsToCloud();
+    }
+
+    if (!localAudioStream) return;
+
+    log("Audio", `جارٍ التبديل إلى المايك: ${deviceId || "default"}`);
+    try {
+      const constraints = {
+        audio: {
+          deviceId: deviceId ? { exact: deviceId } : undefined,
+          echoCancellation: noiseSuppressCheck ? noiseSuppressCheck.checked : true,
+          noiseSuppression: noiseSuppressCheck ? noiseSuppressCheck.checked : true,
+          autoGainControl: true,
+        },
+      };
+
+      const newStream = await navigator.mediaDevices.getUserMedia(constraints);
+      const [newTrack] = newStream.getAudioTracks();
+
+      // Replace audio track in all peer connections
+      for (const peerInfo of peers.values()) {
+        if (peerInfo.pc) {
+          const senders = peerInfo.pc.getSenders();
+          const audioSender = senders.find((s) => s.track && s.track.kind === "audio");
+          if (audioSender) {
+            audioSender.replaceTrack(newTrack);
+          }
+        }
+      }
+
+      // Reconnect to local analyser
+      if (audioContext && localSourceNode) {
+        try { localSourceNode.disconnect(); } catch (_) {}
+        localSourceNode = audioContext.createMediaStreamSource(newStream);
+        localSourceNode.connect(localAnalyser);
+      }
+
+      // Stop old tracks
+      localAudioStream.getAudioTracks().forEach((t) => t.stop());
+      localAudioStream = newStream;
+      setMuteState(isMicMuted, false);
+
+      showAlert("تم تبديل المايك بنجاح!");
+      setTimeout(clearAlert, 2000);
+    } catch (err) {
+      log("Audio", `خطأ أثناء تبديل المايك: ${err.message}`);
+      showAlert(`تعذر تبديل المايك: ${err.message}`, true);
+    }
+  }
+
+  micSelect.addEventListener("change", (e) => switchAudioDevice(e.target.value));
+  settingsMicSelect.addEventListener("change", (e) => switchAudioDevice(e.target.value));
+
+  // ---------------------------------------------------------------------------
+  // Web Audio 3D Spatial Pipeline (Binaural HRTF Panner)
+  // ---------------------------------------------------------------------------
   const TELEPORT_SNAP_DISTANCE = 40;
-  // If my heading changes by more than this between updates, snap the listener orientation.
-  // Gliding each forward-vector component independently through a ~180° turn would pass
-  // through a near-zero (degenerate) forward vector and glitch the panning for an instant.
-  const LISTENER_YAW_SNAP_RADIANS = (2 * Math.PI) / 3; // 120°
-
-  let lastListenerTarget = null; // { x, y, z, yaw } last values sent to the AudioListener
+  const LISTENER_YAW_SNAP_RADIANS = (2 * Math.PI) / 3;
+  let lastListenerTarget = null;
 
   function initAndUnlockSpatialAudioContextSync() {
-    // MUST run synchronously inside the user's tap/click: iOS Safari & Chrome only allow an
-    // AudioContext to start ("running" state) from a user gesture.
     try {
       const AudioCtx = window.AudioContext || window.webkitAudioContext;
       if (!AudioCtx) return;
 
       if (!audioContext) {
         audioContext = new AudioCtx({ latencyHint: "interactive" });
-
-        // Start with the listener at the origin facing -Z (Roblox's default "forward").
         resetListenerToOrigin();
 
-        // iOS suspends/interrupts the context on calls, Siri, lock screen, etc. Resume it.
         audioContext.addEventListener("statechange", () => {
           if (
             localAudioStream &&
@@ -539,7 +379,6 @@
         audioContext.resume();
       }
 
-      // Play one silent sample: fully "unlocks" audio output on older iOS versions.
       const silentBuf = audioContext.createBuffer(1, 1, 22050);
       const src = audioContext.createBufferSource();
       src.buffer = silentBuf;
@@ -550,13 +389,11 @@
     }
   }
 
-  /** Roblox yaw (radians; 0 = facing -Z, +π/2 = facing +X) -> unit forward vector on the XZ plane. */
   function yawToForward(yaw) {
     const a = Number.isFinite(yaw) ? yaw : 0;
     return { x: Math.sin(a), y: 0, z: -Math.cos(a) };
   }
 
-  /** Smallest absolute difference between two angles, in radians (0..π). */
   function angleDelta(a, b) {
     let d = (a - b) % (2 * Math.PI);
     if (d > Math.PI) d -= 2 * Math.PI;
@@ -564,15 +401,6 @@
     return Math.abs(d);
   }
 
-  /**
-   * Drive an AudioParam toward `value`.
-   *  - immediate: jump right now (first placement / teleport), so a voice never
-   *    "flies in" from the origin.
-   *  - otherwise: exponential glide via setTargetAtTime(). cancelScheduledValues(now)
-   *    drops events that haven't started yet (so automation never piles up), while the
-   *    glide already in progress keeps its current value — the new glide therefore starts
-   *    exactly where the parameter is right now: no clicks, no jumps.
-   */
   function setParam(param, value, immediate = false) {
     if (!param || !audioContext || !Number.isFinite(value)) return;
     const now = audioContext.currentTime;
@@ -584,11 +412,6 @@
     }
   }
 
-  /**
-   * Place the AudioListener ("my ears") at my Roblox position, facing my heading.
-   * Chrome/Edge/Safari expose positionX/forwardX/... as AudioParams (smoothable);
-   * Firefox only has the legacy setPosition()/setOrientation() methods (instant).
-   */
   function placeListener(x, y, z, yaw, forceSnap = false) {
     if (!audioContext) return;
     const L = audioContext.listener;
@@ -605,8 +428,6 @@
       setParam(L.positionX, x, snapPosition);
       setParam(L.positionY, y, snapPosition);
       setParam(L.positionZ, z, snapPosition);
-      // forward = where my nose points, up = top of my head. The browser derives
-      // "right" = forward × up, which decides which ear a sound lands in.
       setParam(L.forwardX, f.x, snapOrientation);
       setParam(L.forwardY, 0, snapOrientation);
       setParam(L.forwardZ, f.z, snapOrientation);
@@ -625,15 +446,12 @@
     isListenerPlaced = false;
   }
 
-  /** Build a PannerNode configured for human voices measured in Roblox studs. */
   function createSpatialPanner() {
     const panner = audioContext.createPanner();
-    panner.panningModel = "HRTF";       // true binaural 3D (best on headphones)
-    panner.distanceModel = "inverse";   // natural 1/distance fall-off, like real sound
+    panner.panningModel = "HRTF";
+    panner.distanceModel = "inverse";
     panner.refDistance = SPATIAL_CONFIG.REF_DISTANCE;
     panner.rolloffFactor = SPATIAL_CONFIG.ROLLOFF_FACTOR;
-    // With "inverse", distances beyond maxDistance are clamped (volume stops dropping);
-    // the GainNode after the panner performs the real cut to silence.
     panner.maxDistance = SPATIAL_CONFIG.MAX_HEARING_DISTANCE;
 
     if (SPATIAL_CONFIG.DIRECTIONAL_VOICE) {
@@ -641,33 +459,32 @@
       panner.coneOuterAngle = SPATIAL_CONFIG.CONE_OUTER_ANGLE;
       panner.coneOuterGain = SPATIAL_CONFIG.CONE_OUTER_GAIN;
     } else {
-      panner.coneInnerAngle = 360; // omnidirectional
+      panner.coneInnerAngle = 360;
       panner.coneOuterAngle = 360;
       panner.coneOuterGain = 1;
     }
     return panner;
   }
 
-  /** Place a peer's PannerNode ("their mouth") at their Roblox position, facing their heading. */
   function placePanner(peerInfo, x, y, z, yaw) {
     const panner = peerInfo.pannerNode;
-    if (!panner) return;
-
-    const prev = peerInfo.lastTarget;
-    const snap = !prev || Math.hypot(x - prev.x, y - prev.y, z - prev.z) > TELEPORT_SNAP_DISTANCE;
-    peerInfo.lastTarget = { x, y, z };
+    if (!panner || !audioContext) return;
 
     const f = yawToForward(yaw);
+    const prev = peerInfo.lastTarget;
+    const snapPosition =
+      !prev || Math.hypot(x - prev.x, y - prev.y, z - prev.z) > TELEPORT_SNAP_DISTANCE;
+    const snapOrientation =
+      snapPosition || angleDelta(yaw, prev.yaw) > LISTENER_YAW_SNAP_RADIANS;
+    peerInfo.lastTarget = { x, y, z, yaw };
+
     if (panner.positionX) {
-      setParam(panner.positionX, x, snap);
-      setParam(panner.positionY, y, snap);
-      setParam(panner.positionZ, z, snap);
-      // Orientation only matters for the sound cone (directional voice). A momentary
-      // near-zero vector mid-turn is harmless here: the spec treats a zero orientation
-      // as omnidirectional.
-      setParam(panner.orientationX, f.x, snap);
-      setParam(panner.orientationY, 0, snap);
-      setParam(panner.orientationZ, f.z, snap);
+      setParam(panner.positionX, x, snapPosition);
+      setParam(panner.positionY, y, snapPosition);
+      setParam(panner.positionZ, z, snapPosition);
+      setParam(panner.orientationX, f.x, snapOrientation);
+      setParam(panner.orientationY, 0, snapOrientation);
+      setParam(panner.orientationZ, f.z, snapOrientation);
     } else if (typeof panner.setPosition === "function") {
       panner.setPosition(x, y, z);
       panner.setOrientation(f.x, 0, f.z);
@@ -678,101 +495,66 @@
     const peerInfo = peers.get(peerId);
     if (!peerInfo) return;
 
-    // Chrome quirk (crbug.com/933677): a remote WebRTC stream fed ONLY into
-    // createMediaStreamSource() outputs silence unless the same stream is also attached
-    // to a playing <audio>/<video> element. The element is kept MUTED so we don't hear
-    // the dry, non-spatial copy on top of the 3D one.
-    let audioEl = peerInfo.audioEl;
-    if (!audioEl) {
-      audioEl = document.createElement("audio");
-      audioEl.autoplay = true;
-      audioEl.muted = true;
-      audioEl.playsInline = true;
-      audioEl.setAttribute("playsinline", "");
-      remoteAudioContainer.appendChild(audioEl);
-      peerInfo.audioEl = audioEl;
-    }
-    audioEl.srcObject = remoteStream;
-    audioEl.play().catch(() => {});
-
-    // No Web Audio support at all -> plain (non-spatial) playback through the element.
-    if (!audioContext) {
-      audioEl.muted = false;
-      return;
-    }
-
-    if (audioContext.state === "suspended") {
-      audioContext.resume().catch(() => {});
-    }
-
     teardownPeerAudioNodes(peerInfo);
 
-    const sourceNode = audioContext.createMediaStreamSource(remoteStream);
-    const pannerNode = createSpatialPanner();
+    const audioEl = document.createElement("audio");
+    audioEl.id = `remote-audio-${peerId}`;
+    audioEl.autoplay = true;
+    audioEl.playsInline = true;
+    audioEl.muted = true;
+    audioEl.srcObject = remoteStream;
+    document.getElementById("remote-audio-container").appendChild(audioEl);
+    peerInfo.audioEl = audioEl;
 
-    // Start silent when Roblox data exists: applySpatialLocationsToPeer() fades the voice
-    // in only once we know where this peer is (no full-volume blip from a far-away player).
-    const hasRobloxData = Object.keys(latestLocations).length > 0;
-    const gainNode = audioContext.createGain();
-    gainNode.gain.value = hasRobloxData ? 0.0 : 1.0;
+    audioEl.play().catch(() => {});
 
-    // Voice Activity Detector tap (pre-spatial, UI only)
-    const peerAnalyser = audioContext.createAnalyser();
-    peerAnalyser.fftSize = 128;
-    sourceNode.connect(peerAnalyser);
+    try {
+      const source = audioContext.createMediaStreamSource(remoteStream);
+      const panner = createSpatialPanner();
+      const gainNode = audioContext.createGain();
+      gainNode.gain.value = 1.0;
 
-    // The actual 3D chain: source -> panner -> gain -> speakers
-    sourceNode.connect(pannerNode);
-    pannerNode.connect(gainNode);
-    gainNode.connect(audioContext.destination);
+      const analyser = audioContext.createAnalyser();
+      analyser.fftSize = 64;
 
-    peerInfo.sourceNode = sourceNode;
-    peerInfo.pannerNode = pannerNode;
-    peerInfo.gainNode = gainNode;
-    peerInfo.analyser = peerAnalyser;
-    peerInfo.lastTarget = null; // force the first placement to snap, not glide
+      source.connect(analyser);
+      analyser.connect(panner);
+      panner.connect(gainNode);
+      gainNode.connect(audioContext.destination);
 
-    applySpatialLocationsToPeer(peerInfo);
-    renderDiscordPeersGrid();
+      peerInfo.sourceNode = source;
+      peerInfo.pannerNode = panner;
+      peerInfo.gainNode = gainNode;
+      peerInfo.analyser = analyser;
+
+      applySpatialLocationsToPeer(peerInfo);
+    } catch (err) {
+      log("WebAudio", `خطأ تركيب مسار الصوت (${peerId}): ${err.message}`);
+    }
   }
 
-  /**
-   * Apply the latest Roblox coordinates to ONE remote peer's audio chain.
-   * Called for every peer each time a "locations" broadcast arrives (every 0.5s).
-   */
   function applySpatialLocationsToPeer(peerInfo) {
-    const gainParam = peerInfo.gainNode ? peerInfo.gainNode.gain : null;
-    const hasRobloxData = Object.keys(latestLocations).length > 0;
-
-    // (A) Roblox isn't reporting anyone (backend just started / game not running):
-    //     fall back to plain voice 1 stud in front of the (origin) listener so testing
-    //     without the game still works.
-    if (!hasRobloxData) {
-      peerInfo.spatialSummary = "وضع عادي (بانتظار روبلوكس)";
-      peerInfo.lastTarget = null;
-      if (peerInfo.pannerNode) {
-        placePanner(peerInfo, 0, 0, -1, 0);
-      }
-      setParam(gainParam, 1.0);
-      return;
-    }
+    if (!peerInfo.gainNode) return;
+    const gainParam = peerInfo.gainNode.gain;
 
     const myUid = myRobloxUserId || latestPinMap[myPin];
     const peerUid = peerInfo.robloxUserId || latestPinMap[peerInfo.pin];
 
+    // 1. فحص الحظر والكتم المحلي للمستخدم
+    const isBlocked = (peerUid && locallyBlockedUsers.has(peerUid)) || locallyBlockedUsers.has(peerInfo.peerId);
+    const isMuted = (peerUid && locallyMutedUsers.has(peerUid)) || locallyMutedUsers.has(peerInfo.peerId);
+
+    if (isBlocked || isMuted) {
+      setParam(gainParam, 0.0);
+      peerInfo.spatialSummary = isBlocked ? "🚫 محظور بالكامل" : "🔇 مكتوم محلياً";
+      return;
+    }
+
     const myLoc = myUid ? latestLocations[myUid] : null;
     const peerLoc = peerUid ? latestLocations[peerUid] : null;
 
-    let reason = null;
-    if (!myLoc) reason = "PIN الخاص بك غير موجود باللعبة";
-    else if (!peerUid) reason = "اللاعب لم يُدخل PIN";
-    else if (peerUid === myUid) reason = "نفس حسابك (تبويب آخر)";
-    else if (!peerLoc) reason = "ليس داخل اللعبة حالياً";
-    else if (myLoc.jobId && peerLoc.jobId && myLoc.jobId !== peerLoc.jobId) reason = "في سيرفر روبلوكس آخر";
-
-    if (reason) {
-      peerInfo.spatialSummary = reason;
-      peerInfo.lastTarget = null; // snap when they become placeable again
+    if (!myLoc || !peerLoc) {
+      peerInfo.spatialSummary = !peerLoc ? "ليس داخل اللعبة" : "بانتظار موقعك";
       setParam(gainParam, 0.0);
       return;
     }
@@ -781,13 +563,8 @@
       peerInfo.username = peerLoc.username;
     }
 
-    // (C) THE 3D PART: hand the PannerNode the peer's raw world position + heading.
-    //     The audio thread computes distance / azimuth / elevation relative to the
-    //     AudioListener (which handleLocationsBroadcast() already moved to MY position).
     placePanner(peerInfo, peerLoc.x, peerLoc.y, peerLoc.z, peerLoc.yaw);
 
-    // (D) Hard hearing limit on top of the PannerNode's inverse-distance attenuation:
-    //     1.0 up to FADE_START, linear fade to 0.0 at MAX_HEARING_DISTANCE.
     const dx = peerLoc.x - myLoc.x;
     const dy = peerLoc.y - myLoc.y;
     const dz = peerLoc.z - myLoc.z;
@@ -804,12 +581,10 @@
     }
     setParam(gainParam, cutoffGain);
 
-    // (E) Human-readable direction for the UI ONLY — the audio doesn't use this.
-    //     Project the offset onto my forward and right vectors (right = forward × up).
     const f = yawToForward(myLoc.yaw);
     const ahead = dx * f.x + dz * f.z;
     const side = dx * -f.z + dz * f.x;
-    const angleDeg = Math.round((Math.atan2(side, ahead) * 180) / Math.PI); // 0 = ahead, +90 = right
+    const angleDeg = Math.round((Math.atan2(side, ahead) * 180) / Math.PI);
 
     if (distance >= SPATIAL_CONFIG.MAX_HEARING_DISTANCE) {
       peerInfo.spatialSummary = `${distance.toFixed(1)} studs • خارج السمع`;
@@ -826,16 +601,10 @@
     }
   }
 
-  /**
-   * Handle a "locations" WebSocket message (every 0.5s):
-   *   locationsMap: { [robloxUserId]: { x, y, z, yaw, username, jobId } }
-   *   peerMap:      { [webrtcPeerId]: robloxUserId }
-   */
   function handleLocationsBroadcast(locationsMap, pinMap, peerMap) {
     latestLocations = locationsMap || {};
     latestPinMap = pinMap || {};
 
-    // Auto-resolve my Roblox UserId from myPin!
     if (myPin && latestPinMap[myPin]) {
       myRobloxUserId = String(latestPinMap[myPin]);
     }
@@ -868,14 +637,19 @@
       if (myLoc.username) myUsername = myLoc.username;
       spatialStatusVal.textContent = `متزامن (${Math.round(myLoc.x)}, ${Math.round(myLoc.y)}, ${Math.round(myLoc.z)})`;
       spatialStatusVal.className = "pill-value mono ok";
+
+      // مزامنة حالة الكتم من روبلوكس إلى المتصفح (إذا تغيرت في اللعبة)
+      if (typeof myLoc.muted === "boolean" && myLoc.muted !== isMicMuted) {
+        setMuteState(myLoc.muted, false);
+      }
     } else {
       isListenerPlaced = false;
 
-      // إذا كان اللاعب داخل ماب روبلوكس ثم خرج من اللعبة -> إنهاء المكالمة بالكامل فوراً
+      // الخروج التلقائي من المكالمة بالكامل إذا غادر اللاعب ماب روبلوكس
       if (hasJoinedRobloxGame && localAudioStream) {
         missingLocationTicks++;
         if (missingLocationTicks >= 4) {
-          log("Spatial", "تم رصد خروج اللاعب من ماب روبلوكس -> إنهاء المكالمة الصوتية تلقائياً.");
+          log("Spatial", "تم رصد خروج اللاعب من ماب روبلوكس -> إنهاء المكالمة بالكامل.");
           disconnectSession();
           showAlert("تم إنهاء المكالمة الصوتية تلقائياً لخروجك من ماب روبلوكس.", false);
           return;
@@ -897,7 +671,8 @@
     for (const peerInfo of peers.values()) {
       applySpatialLocationsToPeer(peerInfo);
     }
-    renderDiscordPeersGrid();
+
+    updatePlayersListUI();
   }
 
   function teardownPeerAudioNodes(peerInfo) {
@@ -913,7 +688,7 @@
   }
 
   // ---------------------------------------------------------------------------
-  // كاشف التحدث الصوتي للمايك المحلي (VAD)
+  // كاشف التحدث للمايك (Voice Activity Detector)
   // ---------------------------------------------------------------------------
   function startMicActivityDetector(audioStream) {
     if (!audioStream) return;
@@ -926,13 +701,12 @@
         audioContext.resume().catch(() => {});
       }
 
-      const source = audioContext.createMediaStreamSource(audioStream);
+      localSourceNode = audioContext.createMediaStreamSource(audioStream);
       localAnalyser = audioContext.createAnalyser();
       localAnalyser.fftSize = 512;
       localAnalyser.smoothingTimeConstant = 0.25;
-      source.connect(localAnalyser);
+      localSourceNode.connect(localAnalyser);
 
-      // Force Web Audio engine to keep processing audio in Safari/Chrome background
       try {
         const silentGain = audioContext.createGain();
         silentGain.gain.value = 0.0;
@@ -941,7 +715,6 @@
       } catch (_) {}
 
       const timeData = new Uint8Array(localAnalyser.fftSize);
-      const peerDataArray = new Uint8Array(64);
 
       if (meterRafId) {
         cancelAnimationFrame(meterRafId);
@@ -949,7 +722,6 @@
       }
 
       const updateVAD = () => {
-        // ALWAYS schedule the next frame first so loop NEVER dies
         meterRafId = requestAnimationFrame(updateVAD);
 
         if (!localAudioStream || isMicMuted) {
@@ -963,12 +735,12 @@
             sumSq += norm * norm;
           }
           const rms = Math.sqrt(sumSq / timeData.length);
-          // High-responsiveness RMS formula (0-100%)
           micLevelPct = Math.min(100, Math.round(rms * 500));
           if (micMeterBar) {
             micMeterBar.style.width = `${micLevelPct}%`;
           }
-          const isSpeakingNow = micLevelPct > 4;
+
+          const isSpeakingNow = micLevelPct > micSensitivityThreshold;
           if (isSpeakingNow) {
             lastVoiceActivityTime = Date.now();
             isSelfSpeaking = true;
@@ -979,28 +751,16 @@
           }
         }
 
-        // كشف التحدث للأقران
-        for (const peerInfo of peers.values()) {
-          if (peerInfo.analyser) {
-            peerInfo.analyser.getByteFrequencyData(peerDataArray);
-            let peerSum = 0;
-            for (let i = 0; i < peerDataArray.length; i++) peerSum += peerDataArray[i];
-            peerInfo.isSpeaking = peerSum / peerDataArray.length > 8;
-          }
-        }
-
-        // إرسال حالة التحدث عبر الـ WebSocket لسيرفر اللعبة
         const nowSpeaking = Boolean(isSelfSpeaking);
         if (nowSpeaking !== lastBroadcastSpeaking) {
           lastBroadcastSpeaking = nowSpeaking;
+          renderBlackBoxPiP();
           if (ws && ws.readyState === WebSocket.OPEN) {
             try {
               ws.send(JSON.stringify({ type: "speaking", speaking: nowSpeaking }));
             } catch (_) {}
           }
         }
-
-        renderDiscordPeersGrid();
       };
 
       meterRafId = requestAnimationFrame(updateVAD);
@@ -1010,7 +770,7 @@
   }
 
   // ---------------------------------------------------------------------------
-  // تشغيل نافذة ديسكورد عبر Picture-in-Picture
+  // تشغيل PiP والاتصال الأساسي
   // ---------------------------------------------------------------------------
   async function enterPictureInPicture(videoEl) {
     if (typeof videoEl.requestPictureInPicture === "function") {
@@ -1045,10 +805,7 @@
     } catch (_) {}
 
     if (!window.isSecureContext || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-      showAlert(
-        "يتطلب تشغيل المايك ونافذة PiP رابط آمن HTTPS (أو localhost).",
-        true
-      );
+      showAlert("يتطلب تشغيل المايك ونافذة PiP رابط آمن HTTPS (أو localhost).", true);
       return;
     }
 
@@ -1068,64 +825,49 @@
       return;
     }
 
+    connectBtn.disabled = true;
+    connectBtnText.textContent = "جارٍ تشغيل نافذة PiP بالخلفية...";
     hasJoinedRobloxGame = false;
     missingLocationTicks = 0;
     lastVoiceActivityTime = 0;
-    connectBtn.disabled = true;
-    connectBtnText.textContent = "جارٍ تشغيل نافذة ديسكورد المنبثقة...";
 
     try {
-      // (a) طلب إذن المايك
-      const audioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      localAudioStream = audioStream;
+      const audioConstraints = {
+        deviceId: selectedMicrophoneId ? { exact: selectedMicrophoneId } : undefined,
+        echoCancellation: noiseSuppressCheck ? noiseSuppressCheck.checked : true,
+        noiseSuppression: noiseSuppressCheck ? noiseSuppressCheck.checked : true,
+        autoGainControl: true,
+      };
 
-      const primaryAudioTrack = audioStream.getAudioTracks()[0];
-      if (primaryAudioTrack) {
-        micStateText.textContent = "نشط";
-        primaryAudioTrack.addEventListener("mute", () => {
-          micStateText.textContent = "مكتوم من النظام";
-        });
-        primaryAudioTrack.addEventListener("unmute", () => {
-          micStateText.textContent = isMicMuted ? "مكتوم" : "نشط";
-        });
+      localAudioStream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraints });
+      log("Media", "تم الحصول على إذن المايك بنجاح.");
+      startMicActivityDetector(localAudioStream);
+      await loadAudioDevices();
+
+      // إنشاء مسار الفيديو الأسود الخفيف (160x160 مربع أسود)
+      canvasVideoStream = pipCanvas.captureStream ? pipCanvas.captureStream(5) : null;
+      startBlackBoxPiPLoop();
+
+      combinedPipStream = new MediaStream();
+      if (canvasVideoStream) {
+        canvasVideoStream.getVideoTracks().forEach((t) => combinedPipStream.addTrack(t));
       }
+      localAudioStream.getAudioTracks().forEach((t) => combinedPipStream.addTrack(t));
 
-      startMicActivityDetector(audioStream);
+      pipVideo.srcObject = combinedPipStream;
+      await pipVideo.play().catch(() => {});
 
-      // (b) بدء محرك رسم نافذة ديسكورد الحية
-      startFloatingDiscordOverlayLoop();
-      renderFloatingDiscordOverlay();
-
-      // (c) التقاط دفق فيديو بدقة ديسكورد بمعدل 14 إطار بالثانية
-      const videoStream = pipCanvas.captureStream(14);
-      canvasVideoStream = videoStream;
-
-      // (d) دمج دفق فيديو ديسكورد مع مسار المايك
-      const combinedStream = new MediaStream([
-        ...videoStream.getTracks(),
-        ...audioStream.getTracks(),
-      ]);
-      combinedPipStream = combinedStream;
-
-      pipVideo.srcObject = combinedStream;
-      pipVideo.muted = true; // صامت لمنع ارتداد صدى صوتك في سماعاتك
-
-      if (pipVideo.readyState < HTMLMediaElement.HAVE_METADATA) {
-        await new Promise((resolve) => {
-          pipVideo.addEventListener("loadedmetadata", resolve, { once: true });
-        });
+      try {
+        await enterPictureInPicture(pipVideo);
+        updatePipUiState(true);
+        onPipReadyEstablishWebRTC();
+      } catch (pipErr) {
+        handlePipFailure(pipErr);
       }
-      await pipVideo.play();
-
-      // (e) إطلاق نافذة Picture-in-Picture العائمة
-      await enterPictureInPicture(pipVideo);
-      updatePipUiState(true);
-      log("PiP", "تم إطلاق نافذة ديسكورد العائمة (Overlay) بنجاح!");
-
-      onPipReadyEstablishWebRTC();
     } catch (err) {
       connectBtn.disabled = false;
-      handlePipFailure(err);
+      connectBtnText.textContent = "بدء الاتصال الصوتي (PiP)";
+      showAlert(`فشل تشغيل المايك: ${err.message}`, true);
     }
   }
 
@@ -1134,27 +876,24 @@
     const errMsg = err?.message || String(err);
     log("Warn", `تنبيه PiP (${errName}): ${errMsg}`);
 
-    if (!localAudioStream) {
-      connectBtnText.textContent = "تشغيل نافذة الديسكورد العائمة (PiP Overlay)";
-      showAlert("تم رفض إذن المايك! يرجى السماح بالوصول للمايك من إعدادات المتصفح.", true);
-      return;
-    }
-
     if (errName === "NotAllowedError" || errName === "InvalidAccessError") {
       awaitingSecondTapForPiP = true;
-      connectBtnText.textContent = "اضغط مرة ثانية لفتح نافذة ديسكورد العائمة";
+      connectBtn.disabled = false;
+      connectBtnText.textContent = "اضغط مرة ثانية لفتح نافذة PiP المنبثقة";
       showAlert("تم تجهيز المايك! نظام iOS يتطلب ضغطة ثانية لفتح نافذة PiP المنبثقة.");
       return;
     }
 
     if (errMsg === "PIP_NOT_SUPPORTED" || errName === "NotSupportedError") {
-      connectBtnText.textContent = "تشغيل نافذة الديسكورد العائمة (PiP Overlay)";
-      showAlert("خاصية PiP غير مدعومة في هذا المتصفح. على الآيفون استخدم متصفح Safari الرسمي.");
+      connectBtn.disabled = false;
+      connectBtnText.textContent = "بدء الاتصال الصوتي (PiP)";
+      showAlert("نافذة PiP غير مدعومة في هذا المتصفح. يمكنك المتابعة بالوضع العادي أدناه.");
       fallbackForegroundBtn.classList.remove("hidden");
       return;
     }
 
-    connectBtnText.textContent = "تشغيل نافذة الديسكورد العائمة (PiP Overlay)";
+    connectBtn.disabled = false;
+    connectBtnText.textContent = "بدء الاتصال الصوتي (PiP)";
     showAlert(`خطأ في الإعداد: ${errMsg}`, true);
   }
 
@@ -1164,7 +903,7 @@
     identityGroup.classList.add("hidden");
     connectBtn.classList.add("connected");
     connectBtn.disabled = true;
-    connectBtnText.textContent = `متصل في مكالمة Aura (PIN: ${myPin})`;
+    connectBtnText.textContent = `🟢 متصل في مكالمة Aura (PIN: ${myPin})`;
     sessionControls.classList.remove("hidden");
 
     connectSignalingServer();
@@ -1183,16 +922,17 @@
     if (audioContext && audioContext.state !== "running" && localAudioStream) {
       audioContext.resume().catch(() => {});
     }
-    for (const info of peers.values()) {
-      if (info.audioEl && info.audioEl.paused) {
-        info.audioEl.play().catch(() => {});
-      }
-    }
   });
 
   // ---------------------------------------------------------------------------
-  // خادم الـ WebSocket وتداول إشارات WebRTC
+  // خادم الـ WebSocket وتبادل الإشارات
   // ---------------------------------------------------------------------------
+  function buildSignalingUrl(pin) {
+    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+    const params = new URLSearchParams({ pin: pin || "" });
+    return `${protocol}//${window.location.host}/ws?${params.toString()}`;
+  }
+
   function connectSignalingServer() {
     if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
       return;
@@ -1200,18 +940,16 @@
 
     isIntentionalDisconnect = false;
     const url = buildSignalingUrl(myPin);
-    log("WS", `جارٍ الاتصال برمز PIN=${myPin}...`);
     wsStatusVal.textContent = "جارٍ الاتصال";
     wsStatusVal.className = "pill-value warn";
 
     ws = new WebSocket(url);
 
     ws.addEventListener("open", () => {
-      log("WS", "تم الاتصال بسيرفر الصوت.");
       wsStatusVal.textContent = "متصل";
       wsStatusVal.className = "pill-value ok";
       updateGlobalStatus(
-        isPipActive ? "نافذة ديسكورد عائمة فوق روبلوكس" : "المكالمة متصلة (بدون نافذة)",
+        isPipActive ? "المكالمة نشطة بالخلفية" : "المكالمة متصلة",
         isPipActive ? "online" : "warning"
       );
 
@@ -1261,28 +999,45 @@
         return;
       }
 
+      case "sync-mute": {
+        // مزامنة حالة الكتم من السيرفر/روبلوكس
+        if (typeof msg.muted === "boolean" && msg.muted !== isMicMuted) {
+          setMuteState(msg.muted, false);
+        }
+        return;
+      }
+
       case "welcome": {
         myPeerId = msg.peerId;
-        log("Room", `تم الانضمام برمز PIN: ${myPin} (المعرف: ${myPeerId}). المتواجدون: ${msg.peers.length}`);
-
         for (const remotePeer of msg.peers) {
           registerPeer(remotePeer.peerId, remotePeer.pin, remotePeer.robloxUserId, remotePeer.username);
           await initiateOfferToPeer(remotePeer.peerId);
         }
-        renderDiscordPeersGrid();
+        updatePlayersListUI();
         break;
       }
 
       case "peer-joined": {
-        log("Room", `انضم لاعب: ${msg.username} (PIN: ${msg.pin})`);
         registerPeer(msg.peerId, msg.pin, msg.robloxUserId, msg.username);
-        renderDiscordPeersGrid();
+        updatePlayersListUI();
         break;
       }
 
       case "peer-left": {
         removePeer(msg.peerId);
-        renderDiscordPeersGrid();
+        updatePlayersListUI();
+        break;
+      }
+
+      case "peer-block": {
+        // اللاعب قام بحظرنا أو رفع الحظر عنا
+        const senderInfo = peers.get(msg.sender);
+        if (senderInfo && senderInfo.gainNode) {
+          if (msg.blocked) {
+            senderInfo.gainNode.gain.value = 0.0;
+            senderInfo.spatialSummary = "🚫 قام اللاعب بحظرك";
+          }
+        }
         break;
       }
 
@@ -1304,11 +1059,12 @@
   }
 
   // ---------------------------------------------------------------------------
-  // إدارة اتصالات WebRTC Peer-to-Peer
+  // WebRTC Peer Connections
   // ---------------------------------------------------------------------------
   function registerPeer(peerId, pin, robloxUserId, username) {
     if (!peers.has(peerId)) {
       peers.set(peerId, {
+        peerId,
         pin: pin || "",
         robloxUserId: robloxUserId || "",
         username: username || (pin ? `لاعب ${pin}` : `لاعب_${peerId.slice(0, 4)}`),
@@ -1319,8 +1075,6 @@
         pannerNode: null,
         gainNode: null,
         analyser: null,
-        isSpeaking: false,
-        state: "connecting",
         spatialSummary: "بانتظار روبلوكس...",
       });
     } else {
@@ -1353,11 +1107,6 @@
           candidate: event.candidate,
         });
       }
-    };
-
-    pc.onconnectionstatechange = () => {
-      peerInfo.state = pc.connectionState;
-      renderDiscordPeersGrid();
     };
 
     pc.ontrack = (event) => {
@@ -1394,7 +1143,6 @@
       const answer = await pc.createAnswer();
       await pc.setLocalDescription(answer);
       sendSignal({ type: "answer", target: senderId, sdp: pc.localDescription });
-      renderDiscordPeersGrid();
     } catch (err) {
       log("WebRTC", `خطأ استلام Offer (${senderId}): ${err.message}`);
     }
@@ -1459,25 +1207,360 @@
     for (const peerId of Array.from(peers.keys())) {
       removePeer(peerId);
     }
-    renderDiscordPeersGrid();
+    updatePlayersListUI();
   }
 
   // ---------------------------------------------------------------------------
-  // أزرار التحكم
+  // مزامنة الكتم الثنائية (Bidirectional Mute Synchronization)
   // ---------------------------------------------------------------------------
-  function toggleMute() {
-    if (!localAudioStream) return;
-    isMicMuted = !isMicMuted;
-    for (const track of localAudioStream.getAudioTracks()) {
-      track.enabled = !isMicMuted;
+  function setMuteState(muted, notifyServer = true) {
+    isMicMuted = Boolean(muted);
+
+    if (localAudioStream) {
+      for (const track of localAudioStream.getAudioTracks()) {
+        track.enabled = !isMicMuted;
+      }
     }
+
     muteBtn.classList.toggle("muted-active", isMicMuted);
     muteBtnText.textContent = isMicMuted ? "إلغاء كتم المايك" : "كتم المايك";
-    micStateText.textContent = isMicMuted ? "مكتوم" : "نشط";
-    renderFloatingDiscordOverlay();
-    renderDiscordPeersGrid();
+    micStateText.textContent = isMicMuted ? "مكتوم 🔇" : "نشط 🟢";
+
+    renderBlackBoxPiP();
+
+    // إرسال التحديث لسيرفر روبلوكس لتحديث زر المايك في اللعبة
+    if (notifyServer && ws && ws.readyState === WebSocket.OPEN) {
+      try {
+        ws.send(JSON.stringify({ type: "set-mute", muted: isMicMuted }));
+      } catch (_) {}
+    }
   }
 
+  function toggleMute() {
+    if (!localAudioStream) return;
+    setMuteState(!isMicMuted, true);
+  }
+
+  muteBtn.addEventListener("click", toggleMute);
+
+  // ---------------------------------------------------------------------------
+  // نظام الكتم والحظر (Mute vs. Block System)
+  // ---------------------------------------------------------------------------
+  /**
+   * كتم (Mute): أنت لا تسمعه، ولكنه يسمعك.
+   */
+  function togglePeerMute(targetId) {
+    if (locallyMutedUsers.has(targetId)) {
+      locallyMutedUsers.delete(targetId);
+    } else {
+      locallyMutedUsers.add(targetId);
+      locallyBlockedUsers.delete(targetId); // إلغاء الحظر إذا تم تحويله لكتم فقط
+    }
+
+    // تطبيق فوراً على مسار الصوت
+    for (const info of peers.values()) {
+      if (info.peerId === targetId || info.robloxUserId === targetId) {
+        applySpatialLocationsToPeer(info);
+      }
+    }
+
+    saveModerationSettings();
+    updatePlayersListUI();
+  }
+
+  /**
+   * حظر (Block): حظر متبادل كامل (لا يسمعك ولا تسمعه).
+   */
+  function togglePeerBlock(targetId) {
+    const isNowBlocked = !locallyBlockedUsers.has(targetId);
+
+    if (isNowBlocked) {
+      locallyBlockedUsers.add(targetId);
+      locallyMutedUsers.delete(targetId);
+    } else {
+      locallyBlockedUsers.delete(targetId);
+    }
+
+    // 1. كتم الصوت القادم منه محلياً (لا تسمعه)
+    // 2. إيقاف مسار الصوت الصادر إليه في WebRTC (لا يسمعك)
+    for (const info of peers.values()) {
+      if (info.peerId === targetId || info.robloxUserId === targetId) {
+        applySpatialLocationsToPeer(info);
+
+        if (info.pc) {
+          const senders = info.pc.getSenders();
+          for (const s of senders) {
+            if (s.track && s.track.kind === "audio") {
+              s.track.enabled = !isNowBlocked;
+            }
+          }
+        }
+
+        // إرسال إشارة للطرف الآخر ليعرف أنه محظور
+        sendSignal({
+          type: "peer-block",
+          target: info.peerId,
+          blocked: isNowBlocked,
+        });
+      }
+    }
+
+    saveModerationSettings();
+    updatePlayersListUI();
+  }
+
+  function saveModerationSettings() {
+    localStorage.setItem("aura_muted_users", JSON.stringify(Array.from(locallyMutedUsers)));
+    localStorage.setItem("aura_blocked_users", JSON.stringify(Array.from(locallyBlockedUsers)));
+
+    if (currentUser && authToken) {
+      syncSettingsToCloud();
+    }
+  }
+
+  function loadModerationSettings() {
+    try {
+      const m = JSON.parse(localStorage.getItem("aura_muted_users") || "[]");
+      const b = JSON.parse(localStorage.getItem("aura_blocked_users") || "[]");
+      m.forEach((id) => locallyMutedUsers.add(String(id)));
+      b.forEach((id) => locallyBlockedUsers.add(String(id)));
+    } catch (_) {}
+  }
+
+  loadModerationSettings();
+
+  // ---------------------------------------------------------------------------
+  // واجهة قائمة اللاعبين المنبثقة (Players Moderation Modal)
+  // ---------------------------------------------------------------------------
+  function updatePlayersListUI() {
+    const count = peers.size;
+    navPlayerCount.textContent = count;
+
+    if (!playersModal.classList.contains("hidden")) {
+      renderPlayersModalList();
+    }
+  }
+
+  function renderPlayersModalList() {
+    playersListContainer.innerHTML = "";
+
+    if (peers.size === 0) {
+      playersListContainer.innerHTML = `
+        <div style="text-align: center; padding: 24px 10px; color: var(--text-secondary); font-size: 0.88rem;">
+          لا يوجد لاعبون آخرون متصلون في سيرفر روبلوكس حالياً.
+        </div>
+      `;
+      return;
+    }
+
+    for (const info of peers.values()) {
+      const peerKey = info.robloxUserId || info.peerId;
+      const isMuted = locallyMutedUsers.has(peerKey) || locallyMutedUsers.has(info.peerId);
+      const isBlocked = locallyBlockedUsers.has(peerKey) || locallyBlockedUsers.has(info.peerId);
+
+      const row = document.createElement("div");
+      row.className = "player-mod-card";
+
+      const initials = (info.username || "لاعب").replace(/[^a-zA-Z0-9\u0600-\u06FF]/g, "").slice(0, 2).toUpperCase() || "🎙️";
+
+      row.innerHTML = `
+        <div class="player-info-side">
+          <div class="player-avatar-circle">${initials}</div>
+          <div class="player-name-meta">
+            <span class="player-main-name">${info.username}</span>
+            <span class="player-sub-meta">${info.spatialSummary || "متصل"}</span>
+          </div>
+        </div>
+        <div class="player-actions-side">
+          <button type="button" class="btn-action-mute ${isMuted ? "active" : ""}" title="كتم: أنت لا تسمعه وهو يسمعك">
+            ${isMuted ? "إلغاء الكتم" : "🔇 كتم"}
+          </button>
+          <button type="button" class="btn-action-block ${isBlocked ? "active" : ""}" title="حظر متبادل: لا يسمعك ولا تسمعه">
+            ${isBlocked ? "إلغاء الحظر" : "🚫 حظر"}
+          </button>
+        </div>
+      `;
+
+      const muteBtn = row.querySelector(".btn-action-mute");
+      const blockBtn = row.querySelector(".btn-action-block");
+
+      muteBtn.addEventListener("click", () => togglePeerMute(peerKey));
+      blockBtn.addEventListener("click", () => togglePeerBlock(peerKey));
+
+      playersListContainer.appendChild(row);
+    }
+  }
+
+  openPlayersBtn.addEventListener("click", () => {
+    renderPlayersModalList();
+    playersModal.classList.remove("hidden");
+  });
+  closePlayersBtn.addEventListener("click", () => playersModal.classList.add("hidden"));
+
+  // ---------------------------------------------------------------------------
+  // واجهة الإعدادات المنبثقة (Audio Settings Modal)
+  // ---------------------------------------------------------------------------
+  openSettingsBtn.addEventListener("click", () => {
+    loadAudioDevices();
+    settingsModal.classList.remove("hidden");
+  });
+  closeSettingsBtn.addEventListener("click", () => settingsModal.classList.add("hidden"));
+
+  micSensitivitySlider.addEventListener("input", (e) => {
+    micSensitivityThreshold = parseInt(e.target.value, 10);
+    sensitivityVal.textContent = `${micSensitivityThreshold}%`;
+  });
+
+  saveSettingsBtn.addEventListener("click", () => {
+    settingsModal.classList.add("hidden");
+    showAlert("تم حفظ إعدادات الصوت بنجاح!");
+    setTimeout(clearAlert, 2000);
+    if (currentUser && authToken) {
+      syncSettingsToCloud();
+    }
+  });
+
+  // ---------------------------------------------------------------------------
+  // نظام الحسابات والمصادقة (User Accounts & Cloud Sync)
+  // ---------------------------------------------------------------------------
+  openAccountBtn.addEventListener("click", () => {
+    accountModal.classList.remove("hidden");
+    updateAccountModalView();
+  });
+  closeAccountBtn.addEventListener("click", () => accountModal.classList.add("hidden"));
+
+  let isRegisterTab = false;
+  tabLoginBtn.addEventListener("click", () => {
+    isRegisterTab = false;
+    tabLoginBtn.classList.add("active");
+    tabRegisterBtn.classList.remove("active");
+    authSubmitBtn.textContent = "تسجيل الدخول";
+  });
+  tabRegisterBtn.addEventListener("click", () => {
+    isRegisterTab = true;
+    tabRegisterBtn.classList.add("active");
+    tabLoginBtn.classList.remove("active");
+    authSubmitBtn.textContent = "إنشاء حساب جديد";
+  });
+
+  function updateAccountModalView() {
+    if (currentUser) {
+      authFormsWrap.classList.add("hidden");
+      profileWrap.classList.remove("hidden");
+      profileUsername.textContent = currentUser.username;
+      profileAvatar.textContent = (currentUser.username[0] || "👑").toUpperCase();
+      profileMutedCount.textContent = `المكتومون: ${locallyMutedUsers.size}`;
+      profileBlockedCount.textContent = `المحظورون: ${locallyBlockedUsers.size}`;
+      accountPillText.textContent = `👑 ${currentUser.username}`;
+    } else {
+      authFormsWrap.classList.remove("hidden");
+      profileWrap.classList.add("hidden");
+      accountPillText.textContent = "👤 حسابي";
+    }
+  }
+
+  authForm.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    clearAlert();
+
+    const u = authUsername.value.trim();
+    const p = authPassword.value;
+    const endpoint = isRegisterTab ? "/api/register" : "/api/login";
+
+    authSubmitBtn.disabled = true;
+    try {
+      const res = await fetch(endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username: u, password: p }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.detail || "فشل تسجيل الدخول");
+      }
+
+      authToken = data.token;
+      currentUser = { username: data.username, settings: data.settings };
+      localStorage.setItem("aura_auth_token", authToken);
+
+      applyCloudSettings(data.settings);
+      updateAccountModalView();
+      accountModal.classList.add("hidden");
+      showAlert(`مرحباً بك يا ${data.username}! تم تسجيل الدخول وحفظ إعداداتك.`);
+    } catch (err) {
+      showAlert(err.message, true);
+    } finally {
+      authSubmitBtn.disabled = false;
+    }
+  });
+
+  logoutBtn.addEventListener("click", () => {
+    authToken = "";
+    currentUser = null;
+    localStorage.removeItem("aura_auth_token");
+    updateAccountModalView();
+    showAlert("تم تسجيل الخروج بنجاح.");
+  });
+
+  async function checkExistingAuth() {
+    if (!authToken) return;
+    try {
+      const res = await fetch(`/api/me?token=${encodeURIComponent(authToken)}`);
+      if (res.ok) {
+        const data = await res.json();
+        currentUser = { username: data.username, settings: data.settings };
+        applyCloudSettings(data.settings);
+        updateAccountModalView();
+      } else {
+        authToken = "";
+        localStorage.removeItem("aura_auth_token");
+      }
+    } catch (_) {}
+  }
+
+  function applyCloudSettings(settings) {
+    if (!settings) return;
+    if (settings.preferredMicId) {
+      selectedMicrophoneId = settings.preferredMicId;
+      micSelect.value = selectedMicrophoneId;
+      settingsMicSelect.value = selectedMicrophoneId;
+    }
+    if (Array.isArray(settings.mutedUsers)) {
+      settings.mutedUsers.forEach((id) => locallyMutedUsers.add(String(id)));
+    }
+    if (Array.isArray(settings.blockedUsers)) {
+      settings.blockedUsers.forEach((id) => locallyBlockedUsers.add(String(id)));
+    }
+    if (typeof settings.micSensitivity === "number") {
+      micSensitivityThreshold = settings.micSensitivity;
+      micSensitivitySlider.value = micSensitivityThreshold;
+      sensitivityVal.textContent = `${micSensitivityThreshold}%`;
+    }
+  }
+
+  async function syncSettingsToCloud() {
+    if (!authToken || !currentUser) return;
+    try {
+      await fetch("/api/save-settings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          token: authToken,
+          settings: {
+            preferredMicId: selectedMicrophoneId,
+            mutedUsers: Array.from(locallyMutedUsers),
+            blockedUsers: Array.from(locallyBlockedUsers),
+            micSensitivity: micSensitivityThreshold,
+            noiseSuppression: noiseSuppressCheck ? noiseSuppressCheck.checked : true,
+          },
+        }),
+      });
+    } catch (_) {}
+  }
+
+  // ---------------------------------------------------------------------------
+  // إنهاء الجلسة وإعادة التهيئة
+  // ---------------------------------------------------------------------------
   async function reopenPipWindow() {
     if (!combinedPipStream) return;
     try {
@@ -1485,7 +1568,7 @@
       await enterPictureInPicture(pipVideo);
       updatePipUiState(true);
     } catch (err) {
-      showAlert(`تعذر فتح نافذة ديسكورد: ${err.message}`, true);
+      showAlert(`تعذر فتح نافذة PiP: ${err.message}`, true);
     }
   }
 
@@ -1497,15 +1580,14 @@
     hasJoinedRobloxGame = false;
     missingLocationTicks = 0;
     lastVoiceActivityTime = 0;
-    
+
     clearInterval(wsHeartbeatInterval);
     if (ws) {
       try { ws.close(); } catch (_) {}
       ws = null;
     }
     cleanupAllPeers();
-
-    stopFloatingDiscordOverlayLoop();
+    stopBlackBoxPiPLoop();
 
     try {
       if (document.pictureInPictureElement) {
@@ -1544,19 +1626,22 @@
     identityGroup.classList.remove("hidden");
     connectBtn.classList.remove("connected");
     connectBtn.disabled = false;
-    connectBtnText.textContent = "تشغيل نافذة الديسكورد العائمة (PiP Overlay)";
+    connectBtnText.textContent = "بدء الاتصال الصوتي (PiP)";
     clearAlert();
-    renderDiscordPeersGrid();
+    updatePlayersListUI();
   }
 
   connectBtn.addEventListener("click", startDiscordOverlayAndConnect);
   fallbackForegroundBtn.addEventListener("click", onPipReadyEstablishWebRTC);
-  muteBtn.addEventListener("click", toggleMute);
   reopenPipBtn.addEventListener("click", reopenPipWindow);
   disconnectBtn.addEventListener("click", disconnectSession);
+
+  // Initialize
+  loadAudioDevices();
+  checkExistingAuth();
 })();
 
-// Ensure AudioContext is always resumed on any touch/click
+// Resume audio on user tap
 window.addEventListener("click", () => {
   if (audioContext && audioContext.state === "suspended") {
     audioContext.resume().catch(() => {});
