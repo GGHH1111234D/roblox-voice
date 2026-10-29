@@ -123,6 +123,7 @@ class PeerSession:
     username: str
     websocket: WebSocket
     is_speaking: bool = False
+    last_speaking_ts: float = 0.0
 
 
 class GlobalRoomManager:
@@ -396,10 +397,10 @@ async def update_locations(
         {s.roblox_user_id for s in room.peers.values() if s.roblox_user_id}
     )
     speaking_pins = sorted(
-        {s.pin for s in room.peers.values() if s.pin and s.is_speaking}
+        {s.pin for s in room.peers.values() if s.pin and (s.is_speaking or (now - s.last_speaking_ts < 1.0))}
     )
     speaking_user_ids = sorted(
-        {s.roblox_user_id for s in room.peers.values() if s.roblox_user_id and s.is_speaking}
+        {s.roblox_user_id for s in room.peers.values() if s.roblox_user_id and (s.is_speaking or (now - s.last_speaking_ts < 1.0))}
     )
     return JSONResponse(
         {
@@ -471,7 +472,10 @@ async def signaling_websocket(
                 continue
 
             if msg_type == "speaking":
-                session.is_speaking = bool(data.get("speaking", False))
+                is_spk = bool(data.get("speaking", False))
+                session.is_speaking = is_spk
+                if is_spk:
+                    session.last_speaking_ts = time.monotonic()
                 continue
 
             if msg_type in ("offer", "answer", "ice-candidate"):

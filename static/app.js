@@ -124,6 +124,9 @@
   let micLevelPct = 0;
   let isSelfSpeaking = false;
   let lastBroadcastSpeaking = false;
+  let lastVoiceActivityTime = 0;
+  let hasJoinedRobloxGame = false;
+  let missingLocationTicks = 0;
   let meterRafId = null;
 
   let ws = null;
@@ -857,6 +860,8 @@
     const myLoc = myUid ? latestLocations[myUid] : null;
 
     if (myLoc) {
+      hasJoinedRobloxGame = true;
+      missingLocationTicks = 0;
       placeListener(myLoc.x, myLoc.y, myLoc.z, myLoc.yaw, !isListenerPlaced);
       isListenerPlaced = true;
 
@@ -865,6 +870,18 @@
       spatialStatusVal.className = "pill-value mono ok";
     } else {
       isListenerPlaced = false;
+
+      // إذا كان اللاعب داخل ماب روبلوكس ثم خرج من اللعبة -> إنهاء المكالمة بالكامل فوراً
+      if (hasJoinedRobloxGame && localAudioStream) {
+        missingLocationTicks++;
+        if (missingLocationTicks >= 4) {
+          log("Spatial", "تم رصد خروج اللاعب من ماب روبلوكس -> إنهاء المكالمة الصوتية تلقائياً.");
+          disconnectSession();
+          showAlert("تم إنهاء المكالمة الصوتية تلقائياً لخروجك من ماب روبلوكس.", false);
+          return;
+        }
+      }
+
       if (!hasRobloxData) {
         const t = lastListenerTarget;
         const atOrigin = t && t.x === 0 && t.y === 0 && t.z === 0 && t.yaw === 0;
@@ -951,7 +968,15 @@
           if (micMeterBar) {
             micMeterBar.style.width = `${micLevelPct}%`;
           }
-          isSelfSpeaking = micLevelPct > 6;
+          const isSpeakingNow = micLevelPct > 4;
+          if (isSpeakingNow) {
+            lastVoiceActivityTime = Date.now();
+            isSelfSpeaking = true;
+          } else if (Date.now() - lastVoiceActivityTime < 900) {
+            isSelfSpeaking = true;
+          } else {
+            isSelfSpeaking = false;
+          }
         }
 
         // كشف التحدث للأقران
@@ -1043,6 +1068,9 @@
       return;
     }
 
+    hasJoinedRobloxGame = false;
+    missingLocationTicks = 0;
+    lastVoiceActivityTime = 0;
     connectBtn.disabled = true;
     connectBtnText.textContent = "جارٍ تشغيل نافذة ديسكورد المنبثقة...";
 
@@ -1466,6 +1494,9 @@
     awaitingSecondTapForPiP = false;
     isMicMuted = false;
     latestLocations = {};
+    hasJoinedRobloxGame = false;
+    missingLocationTicks = 0;
+    lastVoiceActivityTime = 0;
     
     clearInterval(wsHeartbeatInterval);
     if (ws) {
