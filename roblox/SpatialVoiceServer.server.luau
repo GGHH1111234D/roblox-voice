@@ -25,7 +25,7 @@ local RunService = game:GetService("RunService")
 --------------------------------------------------------------------------------
 -- استبدل YOUR-RENDER-APP باسم موقعك على Render:
 -- مثال: "https://roblox-webrtc-spatial-voice.onrender.com/update_locations"
-local RENDER_URL: string = "https://YOUR-RENDER-APP.onrender.com/update_locations"
+local RENDER_URL: string = "https://roblox-voice-9tn3.onrender.com/update_locations"
 
 -- الرابط المحلي للاختبار داخل استوديو فقط:
 local LOCAL_URL: string = "http://127.0.0.1:8000/update_locations"

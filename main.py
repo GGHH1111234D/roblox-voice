@@ -122,6 +122,7 @@ class PeerSession:
     roblox_user_id: str
     username: str
     websocket: WebSocket
+    is_speaking: bool = False
 
 
 class GlobalRoomManager:
@@ -394,6 +395,12 @@ async def update_locations(
     connected_user_ids = sorted(
         {s.roblox_user_id for s in room.peers.values() if s.roblox_user_id}
     )
+    speaking_pins = sorted(
+        {s.pin for s in room.peers.values() if s.pin and s.is_speaking}
+    )
+    speaking_user_ids = sorted(
+        {s.roblox_user_id for s in room.peers.values() if s.roblox_user_id and s.is_speaking}
+    )
     return JSONResponse(
         {
             "status": "ok",
@@ -401,6 +408,8 @@ async def update_locations(
             "trackedPlayers": len(player_locations),
             "connectedVoiceUserIds": connected_user_ids,
             "activeVoicePins": active_connected_pins,
+            "speakingVoicePins": speaking_pins,
+            "speakingUserIds": speaking_user_ids,
         }
     )
 
@@ -459,6 +468,10 @@ async def signaling_websocket(
 
             if msg_type == "ping":
                 await room._safe_send(session, {"type": "pong"})
+                continue
+
+            if msg_type == "speaking":
+                session.is_speaking = bool(data.get("speaking", False))
                 continue
 
             if msg_type in ("offer", "answer", "ice-candidate"):

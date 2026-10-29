@@ -123,6 +123,7 @@
   let localAnalyser = null;
   let micLevelPct = 0;
   let isSelfSpeaking = false;
+  let lastBroadcastSpeaking = false;
   let meterRafId = null;
 
   let ws = null;
@@ -960,6 +961,17 @@
             let peerSum = 0;
             for (let i = 0; i < peerDataArray.length; i++) peerSum += peerDataArray[i];
             peerInfo.isSpeaking = peerSum / peerDataArray.length > 8;
+          }
+        }
+
+        // إرسال حالة التحدث عبر الـ WebSocket لسيرفر اللعبة
+        const nowSpeaking = Boolean(isSelfSpeaking);
+        if (nowSpeaking !== lastBroadcastSpeaking) {
+          lastBroadcastSpeaking = nowSpeaking;
+          if (ws && ws.readyState === WebSocket.OPEN) {
+            try {
+              ws.send(JSON.stringify({ type: "speaking", speaking: nowSpeaking }));
+            } catch (_) {}
           }
         }
 
