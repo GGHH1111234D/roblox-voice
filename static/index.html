@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="UTF-8" />
+  <meta
+    name="viewport"
+    content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"
+  />
+  <meta name="theme-color" content="#090d16" />
+  <title>مايك روبلوكس المكاني 3D</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <main class="app-shell">
+    <!-- رأس الصفحة البسيط -->
+    <header class="hero-card">
+      <div class="brand-badge">
+        <span class="pulse-dot" id="global-status-dot"></span>
+        <span id="global-status-label">جاهز للربط عبر الـ PIN</span>
+      </div>
+      <h1>صوت روبلوكس المكاني 3D</h1>
+      <p class="subtitle">
+        صوت مكاني حقيقي حسب المسافة والاتجاه + مايك بالخلفية للآيفون
+      </p>
+    </header>
+
+    <!-- شريط التنبيهات -->
+    <section id="alert-banner" class="alert-banner hidden" role="alert"></section>
+
+    <!-- البطاقة الرئيسية -->
+    <section class="card control-card">
+      <!-- حقل إدخال الـ PIN -->
+      <div id="identity-group" class="identity-fields">
+        <div class="input-group">
+          <label for="pin-input">
+            <span>رمز الـ PIN في اللعبة</span>
+            <span class="req-tag">4 أرقام من الشاشة</span>
+          </label>
+          <div class="pin-input-container">
+            <input
+              type="text"
+              id="pin-input"
+              class="pin-large-input"
+              inputmode="numeric"
+              pattern="[0-9]*"
+              placeholder="0000"
+              maxlength="4"
+              autocomplete="off"
+              autofocus
+            />
+            <button
+              type="button"
+              id="toggle-pin-mask"
+              class="pin-mask-toggle"
+              title="إخفاء/إظهار الرمز لحماية البث المباشر وShare Screen"
+            >
+              👁️
+            </button>
+          </div>
+          <span class="input-hint">
+            ادخل روبلوكس وستجد الرمز أعلى الشاشة (اضغط عليه في اللعبة لإخفائه أثناء مشاركة الشاشة).
+          </span>
+        </div>
+      </div>
+
+      <!-- زر الاتصال الأساسي -->
+      <button id="connect-btn" class="btn btn-discord" type="button">
+        <svg class="btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
+          <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+          <line x1="12" y1="19" x2="12" y2="23" />
+          <line x1="8" y1="23" x2="16" y2="23" />
+        </svg>
+        <span id="connect-btn-text">بدء الاتصال الصوتي (PiP)</span>
+      </button>
+
+      <!-- زر اختياري بدون نافذة منبثقة -->
+      <button id="fallback-foreground-btn" class="btn btn-ghost hidden" type="button">
+        المتابعة بالوضع العادي (بدون نافذة)
+      </button>
+
+      <!-- أزرار التحكم بالمكالمة النشطة -->
+      <div id="session-controls" class="session-controls hidden">
+        <button id="mute-btn" class="btn btn-secondary" type="button">
+          <span id="mute-btn-text">كتم المايك</span>
+        </button>
+        <button id="reopen-pip-btn" class="btn btn-warning hidden" type="button">
+          إعادة فتح نافذة PiP
+        </button>
+        <button id="disconnect-btn" class="btn btn-danger" type="button">
+          إنهاء المكالمة
+        </button>
+      </div>
+
+      <!-- مقياس مستوى صوت المايك المباشر السلس -->
+      <div class="mic-meter-wrap">
+        <div class="mic-meter-header">
+          <span>المايك الخاص بك</span>
+          <span id="mic-state-text">غير نشط</span>
+        </div>
+        <div class="mic-meter-track">
+          <div id="mic-meter-bar" class="mic-meter-bar"></div>
+        </div>
+      </div>
+
+      <!-- شريط الحالة الأنيق والمبسط -->
+      <div class="telemetry-grid">
+        <div class="telemetry-pill">
+          <span class="pill-label">إحداثيات 3D</span>
+          <span class="pill-value mono" id="spatial-status-val">بانتظار الـ PIN</span>
+        </div>
+        <div class="telemetry-pill">
+          <span class="pill-label">حالة الاتصال</span>
+          <span class="pill-value" id="ws-status-val">غير متصل</span>
+        </div>
+        <div class="telemetry-pill">
+          <span class="pill-label">نافذة PiP</span>
+          <span class="pill-value" id="pip-status-val">معطل</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- اللاعبون المتصلون بالقرب منك -->
+    <section class="card peers-card">
+      <div class="card-header">
+        <h2>اللاعبون في السيرفر</h2>
+        <span class="peer-count-badge" id="peer-count-badge">0</span>
+      </div>
+      <div id="discord-grid" class="discord-grid">
+        <!-- كروت اللاعبين المصغرة تظهر هنا تلقائياً -->
+      </div>
+      <ul id="peers-list" class="peers-list hidden"></ul>
+      <div id="remote-audio-container" class="sr-audio-pool" aria-hidden="true"></div>
+    </section>
+
+    <!-- سجل تشخيص اختياري مخفي ببساطة -->
+    <details class="card log-card" style="margin-top: 10px; opacity: 0.7;">
+      <summary style="cursor: pointer; font-size: 0.82rem; color: var(--text-secondary);">خيارات متقدمة وسجل التشخيص</summary>
+      <pre id="debug-log" class="debug-log" style="margin-top: 8px; max-height: 150px; font-size: 0.75rem;"></pre>
+    </details>
+  </main>
+
+  <!-- مسرح PiP الشفاف لتشغيل المايك في خلفية iOS -->
+  <div class="pip-stage" style="position: absolute; width: 1px; height: 1px; opacity: 0.01; pointer-events: none; overflow: hidden;">
+    <canvas id="pipCanvas" width="480" height="240"></canvas>
+    <video
+      id="pip-video"
+      class="pip-hidden-video"
+      playsinline
+      webkit-playsinline
+      autoplay
+      muted
+    ></video>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
